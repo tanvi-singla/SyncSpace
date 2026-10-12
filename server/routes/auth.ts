@@ -129,6 +129,20 @@ router.get('/me', requireAuth, async (req: Request, res: Response): Promise<void
 });
 
 /**
+ * GET /api/auth/ws-token
+ * Issues a signed token for authenticated WebSocket/Yjs connections.
+ */
+router.get('/ws-token', requireAuth, (req: Request, res: Response): void => {
+  if (!req.user) {
+    res.status(401).json({ error: 'Authentication required' });
+    return;
+  }
+  const token = signToken({ userId: req.user.userId, email: req.user.email });
+  res.status(200).json({ token, userId: req.user.userId });
+});
+
+
+/**
  * POST /api/auth/forgot-password
  * Initiates password reset by generating a secure token and storing its hash.
  * Returns a generic response regardless of whether the email exists (prevents user enumeration).

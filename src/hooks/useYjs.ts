@@ -4,13 +4,13 @@ import { IndexeddbPersistence } from 'y-indexeddb';
 import { WebsocketProvider } from 'y-websocket';
 import { CanvasElement, UserPresence, ConnectionStatus, ActiveTool } from '../types/canvas';
 import { getRandomUserName, getRandomUserColor, generateId } from '../utils/constants';
+import { getWsUrl } from '../lib/yjs/config';
+import { getCanvasRoomName } from '../lib/yjs/rooms';
 
 interface UseYjsOptions {
   roomId: string;
   wsUrl?: string;
 }
-
-const DEFAULT_WS_URL = 'ws://localhost:1234';
 
 const INITIAL_WELCOME_NOTES: CanvasElement[] = [
   {
@@ -83,7 +83,7 @@ const INITIAL_WELCOME_NOTES: CanvasElement[] = [
   }
 ];
 
-export function useYjs({ roomId, wsUrl = DEFAULT_WS_URL }: UseYjsOptions) {
+export function useYjs({ roomId, wsUrl }: UseYjsOptions) {
   const [elements, setElements] = useState<CanvasElement[]>([]);
   const [connectionStatus, setConnectionStatus] = useState<ConnectionStatus>('connecting');
   const [isIndexedDbSynced, setIsIndexedDbSynced] = useState(false);
@@ -105,6 +105,8 @@ export function useYjs({ roomId, wsUrl = DEFAULT_WS_URL }: UseYjsOptions) {
   const elementsMapRef = useRef<Y.Map<CanvasElement> | null>(null);
   const lastCursorUpdateRef = useRef<number>(0);
 
+  const resolvedWsUrl = wsUrl || getWsUrl();
+
   // Sync current user to localStorage
   useEffect(() => {
     localStorage.setItem('paper_user_name', currentUser.name);
@@ -113,7 +115,7 @@ export function useYjs({ roomId, wsUrl = DEFAULT_WS_URL }: UseYjsOptions) {
 
   // Initialize Y.Doc, IndexedDB, and WebSocket provider for roomId
   useEffect(() => {
-    const docName = `paper-craft-${roomId}`;
+    const docName = getCanvasRoomName(roomId);
     const doc = new Y.Doc();
     ydocRef.current = doc;
 
@@ -146,12 +148,18 @@ export function useYjs({ roomId, wsUrl = DEFAULT_WS_URL }: UseYjsOptions) {
 
     // 2. WebSocket Provider (Graceful offline fallback)
     let wsProvider: WebsocketProvider | null = null;
+    let cleanupAwareness: (() => void) | undefined;
+
     try {
-      wsProvider = new WebsocketProvider(wsUrl, docName, doc, { connect: true });
+      wsProvider = new WebsocketProvider(resolvedWsUrl, docName, doc, { connect: true });
       providerRef.current = wsProvider;
 
       wsProvider.on('status', (event: { status: 'connected' | 'connecting' | 'disconnected' }) => {
         setConnectionStatus(event.status);
+      });
+
+      wsProvider.on('connection-error', () => {
+        setConnectionStatus('disconnected');
       });
 
       // Awareness for Multiplayer Presence
@@ -186,20 +194,27 @@ export function useYjs({ roomId, wsUrl = DEFAULT_WS_URL }: UseYjsOptions) {
       };
 
       awareness.on('change', handleAwarenessChange);
+      cleanupAwareness = () => {
+        awareness.off('change', handleAwarenessChange);
+        awareness.setLocalState(null);
+      };
     } catch (e) {
       console.warn('WebSocket connection fallback to local-only mode:', e);
       setConnectionStatus('disconnected');
     }
 
     // Observe changes to shared elementsMap
-    elementsMap.observe(() => {
+    const handleMapChange = () => {
       updateReactElements();
-    });
+    };
+    elementsMap.observe(handleMapChange);
 
     // Initial state read
     updateReactElements();
 
     return () => {
+      elementsMap.unobserve(handleMapChange);
+      cleanupAwareness?.();
       if (wsProvider) {
         wsProvider.destroy();
       }
@@ -210,7 +225,7 @@ export function useYjs({ roomId, wsUrl = DEFAULT_WS_URL }: UseYjsOptions) {
       idbRef.current = null;
       elementsMapRef.current = null;
     };
-  }, [roomId, wsUrl]);
+  }, [roomId, resolvedWsUrl]);
 
   // Update awareness when local user profile changes
   useEffect(() => {
@@ -367,3 +382,5 @@ export function useYjs({ roomId, wsUrl = DEFAULT_WS_URL }: UseYjsOptions) {
     clientId: ydocRef.current?.clientID,
   };
 }
+
+export default useYjs;

@@ -10,7 +10,7 @@
     "test": "vitest run",
     "prisma:generate": "prisma generate",
     "server": "tsx watch server/index.ts",
-    "yjs": "y-websocket-server"
+    "yjs": "tsx server/yjsServer.ts"
   },
   "dependencies": {
     "@prisma/client": "^6.19.3",

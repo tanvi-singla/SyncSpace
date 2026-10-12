@@ -20,6 +20,8 @@ import {
   getClosestAnchorSide, 
   calculateElementsBounds 
 } from '../../utils/canvasGeometry';
+import { getWsUrl } from '../../lib/yjs/config';
+import { getCanvasRoomName } from '../../lib/yjs/rooms';
 
 interface UseCanvasEngineOptions {
   roomId: string;
@@ -28,22 +30,17 @@ interface UseCanvasEngineOptions {
   currentUserColor?: string;
 }
 
-// Keep the relay separate from the Express API. VITE_WS_URL is retained as a
-// backwards-compatible fallback for existing local setups.
-const DEFAULT_WS_URL = (import.meta as any).env?.VITE_YJS_WS_URL
-  || (import.meta as any).env?.VITE_WS_URL
-  || 'ws://localhost:1234';
-
 function generateUniqueId(prefix = 'elem'): string {
   return `${prefix}_${Math.random().toString(36).substring(2, 9)}_${Date.now().toString(36)}`;
 }
 
 export function useCanvasEngine({
   roomId,
-  wsUrl = DEFAULT_WS_URL,
+  wsUrl,
   currentUserName = 'Tanvi',
   currentUserColor = '#00667E',
 }: UseCanvasEngineOptions) {
+  const resolvedWsUrl = wsUrl || getWsUrl();
   // Elements state
   const [elements, setElements] = useState<CanvasElement[]>([]);
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
@@ -83,7 +80,7 @@ export function useCanvasEngine({
     // The PostgreSQL document UUID is the only room identifier. Using the same
     // name for IndexedDB and the relay means an offline document resumes into
     // exactly the room it later synchronizes with.
-    const docName = `syncspace:${roomId || 'default'}`;
+    const docName = getCanvasRoomName(roomId || 'default');
     const doc = new Y.Doc();
     ydocRef.current = doc;
 
@@ -107,7 +104,8 @@ export function useCanvasEngine({
     // Do not seed while a remote document may still be arriving: doing so would
     // accidentally add the demo items to an existing collaborator's canvas.
     const seedInitialContentIfNeeded = () => {
-      if (!indexedDbReady || !websocketSynced || initialContentSeeded || elementsMap.size !== 0) return;
+      if (!indexedDbReady || initialContentSeeded || elementsMap.size !== 0) return;
+      if (!websocketSynced && connectionStatus === 'connected') return;
       initialContentSeeded = true;
       doc.transact(() => {
         INITIAL_DEMO_CANVAS_ITEMS.forEach((item) => {
@@ -121,6 +119,9 @@ export function useCanvasEngine({
       setIsIndexedDbSynced(true);
       setSaveStatus('synced');
       seedInitialContentIfNeeded();
+      setTimeout(() => {
+        if (!websocketSynced) seedInitialContentIfNeeded();
+      }, 500);
       syncElementsFromYjs();
     };
     idbProvider.on('synced', handleIndexedDbSynced);
@@ -134,7 +135,7 @@ export function useCanvasEngine({
     let wsProvider: WebsocketProvider | null = null;
     let cleanupAwareness: (() => void) | undefined;
     try {
-      wsProvider = new WebsocketProvider(wsUrl, docName, doc, { connect: true });
+      wsProvider = new WebsocketProvider(resolvedWsUrl, docName, doc, { connect: true });
       providerRef.current = wsProvider;
 
       wsProvider.on('status', (event: { status: 'connected' | 'connecting' | 'disconnected' }) => {

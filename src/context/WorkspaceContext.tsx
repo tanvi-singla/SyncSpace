@@ -12,6 +12,7 @@ import {
   getSharedDocumentsApi,
   getDocumentApi,
 } from '../lib/api/documents';
+import { getWsUrl } from '../lib/yjs/config';
 
 export type CanvasItem = { id: string; type: string; x: number; y: number; w?: number; h?: number; r?: number; text?: string; color?: string };
 
@@ -39,9 +40,6 @@ export type WorkspaceContextType = {
 
 
 export const WorkspaceContext = createContext<WorkspaceContextType | null>(null);
-
-// Integration's relay configuration. This endpoint is separate from Express.
-const DEFAULT_WS_URL = (import.meta as any).env?.VITE_WS_URL || 'ws://localhost:1234';
 
 function createLocalFileId(): string {
   return `file-${crypto.randomUUID?.() || Math.random().toString(36).slice(2)}`;
@@ -84,7 +82,7 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
 
     let cleanupAwareness: (() => void) | undefined;
     try {
-      wsProvider = new WebsocketProvider(DEFAULT_WS_URL, 'workspace-directory', doc, { connect: true });
+      wsProvider = new WebsocketProvider(getWsUrl(), 'workspace-directory', doc, { connect: true });
       providerRef.current = wsProvider;
       wsProvider.on('status', (event: { status: 'connected' | 'connecting' | 'disconnected' }) => {
         setSaveStatus(event.status === 'connected' ? 'synced' : event.status === 'connecting' ? 'syncing' : 'offline');

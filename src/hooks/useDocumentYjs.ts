@@ -3,12 +3,27 @@ import * as Y from 'yjs';
 import { IndexeddbPersistence } from 'y-indexeddb';
 import { WebsocketProvider } from 'y-websocket';
 import { DocumentBlock, BlockType } from '../types/documentTheme';
+import { getWsUrl } from '../lib/yjs/config';
+import { getDocumentRoomName } from '../lib/yjs/rooms';
 
 export type ConnectionStatus = 'connected' | 'connecting' | 'disconnected';
+
+export interface DocumentCollaborator {
+  clientId: number;
+  userId?: string;
+  name: string;
+  color: string;
+  lastActive: number;
+}
 
 export interface UseDocumentYjsOptions {
   documentId: string;
   wsUrl?: string;
+  user?: {
+    id?: string;
+    name?: string;
+    color?: string;
+  };
 }
 
 export interface UseDocumentYjsReturn {
@@ -27,19 +42,53 @@ export interface UseDocumentYjsReturn {
   connectionStatus: ConnectionStatus;
   isIndexedDbSynced: boolean;
   clientId: number;
+  collaborators: DocumentCollaborator[];
+  remoteUsers: DocumentCollaborator[];
 }
-
-const DEFAULT_WS_URL =
-  (import.meta as any).env?.VITE_WS_URL || 'ws://localhost:1234';
 
 function generateBlockId(): string {
   return `b_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`;
 }
 
-function findBlockIndex(arr: Y.Array<DocumentBlock>, id: string): number {
+/**
+ * Normalizes an item from the Y.Array (supporting both granular Y.Map blocks
+ * and legacy plain DocumentBlock objects) into a typed DocumentBlock.
+ */
+function yItemToBlock(item: any): DocumentBlock {
+  if (item instanceof Y.Map) {
+    return {
+      id: item.get('id') || '',
+      type: item.get('type') || 'paragraph',
+      content: item.get('content') || '',
+      checked: item.get('checked') ?? false,
+    };
+  }
+  return {
+    id: item?.id || '',
+    type: item?.type || 'paragraph',
+    content: item?.content || '',
+    checked: item?.checked ?? false,
+  };
+}
+
+/**
+ * Converts a DocumentBlock into a collaborative Y.Map for granular property CRDT updates.
+ */
+function blockToYMap(b: DocumentBlock): Y.Map<any> {
+  const map = new Y.Map<any>();
+  map.set('id', b.id);
+  map.set('type', b.type);
+  map.set('content', b.content);
+  map.set('checked', b.checked ?? false);
+  return map;
+}
+
+function findBlockIndex(arr: Y.Array<any>, id: string): number {
   for (let i = 0; i < arr.length; i++) {
     const b = arr.get(i);
-    if (b && b.id === id) {
+    if (!b) continue;
+    const bid = b instanceof Y.Map ? b.get('id') : b.id;
+    if (bid === id) {
       return i;
     }
   }
@@ -48,18 +97,23 @@ function findBlockIndex(arr: Y.Array<DocumentBlock>, id: string): number {
 
 export function useDocumentYjs({
   documentId,
-  wsUrl = DEFAULT_WS_URL,
+  wsUrl,
+  user,
 }: UseDocumentYjsOptions): UseDocumentYjsReturn {
   const [blocks, setBlocks] = useState<DocumentBlock[]>([]);
-  const [connectionStatus, setConnectionStatus] =
-    useState<ConnectionStatus>('connecting');
+  const [connectionStatus, setConnectionStatus] = useState<ConnectionStatus>('connecting');
   const [isIndexedDbSynced, setIsIndexedDbSynced] = useState(false);
   const [clientId, setClientId] = useState<number>(0);
+  const [collaborators, setCollaborators] = useState<DocumentCollaborator[]>([]);
 
   const ydocRef = useRef<Y.Doc | null>(null);
-  const blocksArrayRef = useRef<Y.Array<DocumentBlock> | null>(null);
+  const blocksArrayRef = useRef<Y.Array<any> | null>(null);
   const providerRef = useRef<WebsocketProvider | null>(null);
   const idbRef = useRef<IndexeddbPersistence | null>(null);
+  const awarenessThrottleRef = useRef<number>(0);
+
+  // Use the standardized multi-computer WebSocket URL resolver
+  const resolvedWsUrl = wsUrl || getWsUrl();
 
   useEffect(() => {
     // Graceful handling for missing or blank document ID
@@ -67,21 +121,27 @@ export function useDocumentYjs({
       setBlocks([]);
       setConnectionStatus('disconnected');
       setIsIndexedDbSynced(false);
+      setCollaborators([]);
       return;
     }
 
-    const docName = `syncspace-document-${documentId.trim()}`;
+    const docName = getDocumentRoomName(documentId);
     const doc = new Y.Doc();
     ydocRef.current = doc;
     setClientId(doc.clientID);
 
-    const blocksArray = doc.getArray<DocumentBlock>('blocks');
+    const blocksArray = doc.getArray<any>('blocks');
     blocksArrayRef.current = blocksArray;
 
     const syncBlocksFromYjs = () => {
       const currentArray = blocksArrayRef.current;
       if (!currentArray) return;
-      setBlocks(currentArray.toArray());
+      const list: DocumentBlock[] = [];
+      for (let i = 0; i < currentArray.length; i++) {
+        const item = currentArray.get(i);
+        if (item) list.push(yItemToBlock(item));
+      }
+      setBlocks(list);
     };
 
     let hasInitialized = false;
@@ -98,12 +158,12 @@ export function useDocumentYjs({
         currentDoc.transact(() => {
           if (currentArray.length === 0) {
             currentArray.push([
-              {
+              blockToYMap({
                 id: 'b1',
                 type: 'paragraph',
                 content: '',
                 checked: false,
-              },
+              }),
             ]);
           }
         });
@@ -114,7 +174,8 @@ export function useDocumentYjs({
           const b1Indices: number[] = [];
           for (let i = 0; i < currentArray.length; i++) {
             const item = currentArray.get(i);
-            if (item && item.id === 'b1' && item.content === '') {
+            const block = yItemToBlock(item);
+            if (block.id === 'b1' && block.content === '') {
               b1Indices.push(i);
             }
           }
@@ -141,8 +202,10 @@ export function useDocumentYjs({
 
     // 2. Real-time WebSocket synchronization across tabs and users
     let wsProvider: WebsocketProvider | null = null;
+    let cleanupAwareness: (() => void) | undefined;
+
     try {
-      wsProvider = new WebsocketProvider(wsUrl, docName, doc, {
+      wsProvider = new WebsocketProvider(resolvedWsUrl, docName, doc, {
         connect: true,
       });
       providerRef.current = wsProvider;
@@ -157,6 +220,49 @@ export function useDocumentYjs({
           syncBlocksFromYjs();
         }
       });
+
+      wsProvider.on('connection-error', () => {
+        setConnectionStatus('disconnected');
+      });
+
+      // Awareness for collaborative presence
+      const awareness = wsProvider.awareness;
+      awareness.setLocalStateField('user', {
+        name: user?.name || 'Collaborator',
+        color: user?.color || '#00667E',
+        userId: user?.id,
+        currentDocId: documentId,
+        lastActive: Date.now(),
+      });
+
+      const handleAwarenessChange = () => {
+        const now = Date.now();
+        if (now - awarenessThrottleRef.current < 40) return; // Throttled updates to prevent high-frequency re-renders
+        awarenessThrottleRef.current = now;
+
+        const states = awareness.getStates();
+        const active: DocumentCollaborator[] = [];
+        const localClientId = doc.clientID;
+
+        states.forEach((state, cid) => {
+          if (cid !== localClientId && state.user) {
+            active.push({
+              clientId: cid,
+              userId: state.user.userId,
+              name: state.user.name || 'Anonymous',
+              color: state.user.color || '#00667E',
+              lastActive: state.user.lastActive || Date.now(),
+            });
+          }
+        });
+        setCollaborators(active);
+      };
+
+      awareness.on('change', handleAwarenessChange);
+      cleanupAwareness = () => {
+        awareness.off('change', handleAwarenessChange);
+        awareness.setLocalState(null);
+      };
     } catch (e) {
       console.warn(
         `[useDocumentYjs] WebSocket initialization fallback to offline IndexedDB for ${docName}:`,
@@ -165,19 +271,20 @@ export function useDocumentYjs({
       setConnectionStatus('disconnected');
     }
 
-    // 3. Observe Y.Array mutations (local, remote, or storage hydration)
+    // 3. Observe deep mutations (both block order changes and individual block property changes)
     const handleArrayChange = () => {
       syncBlocksFromYjs();
     };
 
-    blocksArray.observe(handleArrayChange);
+    blocksArray.observeDeep(handleArrayChange);
 
-    // Initial sync
+    // Initial state read
     syncBlocksFromYjs();
 
     // 4. Cleanup on document change or unmount
     return () => {
-      blocksArray.unobserve(handleArrayChange);
+      blocksArray.unobserveDeep(handleArrayChange);
+      cleanupAwareness?.();
       if (wsProvider) {
         wsProvider.destroy();
       }
@@ -188,9 +295,9 @@ export function useDocumentYjs({
       providerRef.current = null;
       idbRef.current = null;
     };
-  }, [documentId, wsUrl]);
+  }, [documentId, resolvedWsUrl]);
 
-  // Update a block in Y.Doc
+  // Update a block in Y.Doc with granular property mutations (no delete-reinsert)
   const updateBlock = useCallback(
     (
       id: string,
@@ -212,21 +319,36 @@ export function useDocumentYjs({
       const current = currentArray.get(idx);
       if (!current) return;
 
-      // Avoid unnecessary duplicate transactions if content/properties are identical
-      const hasChanges = Object.entries(patch).some(
-        ([key, value]) => (current as any)[key] !== value
-      );
-      if (!hasChanges) return;
+      // Granular Y.Map mutation
+      if (current instanceof Y.Map) {
+        currentDoc.transact(() => {
+          if (patch.content !== undefined && current.get('content') !== patch.content) {
+            current.set('content', patch.content);
+          }
+          if (patch.type !== undefined && current.get('type') !== patch.type) {
+            current.set('type', patch.type);
+          }
+          if (patch.checked !== undefined && current.get('checked') !== patch.checked) {
+            current.set('checked', patch.checked);
+          }
+        });
+      } else {
+        // Legacy plain object fallback
+        const hasChanges = Object.entries(patch).some(
+          ([key, value]) => (current as any)[key] !== value
+        );
+        if (!hasChanges) return;
 
-      const updated: DocumentBlock = {
-        ...current,
-        ...patch,
-      };
+        const updated: DocumentBlock = {
+          ...current,
+          ...patch,
+        };
 
-      currentDoc.transact(() => {
-        currentArray.delete(idx, 1);
-        currentArray.insert(idx, [updated]);
-      });
+        currentDoc.transact(() => {
+          currentArray.delete(idx, 1);
+          currentArray.insert(idx, [blockToYMap(updated)]);
+        });
+      }
     },
     []
   );
@@ -258,15 +380,17 @@ export function useDocumentYjs({
         };
       }
 
+      const ymap = blockToYMap(newBlock);
+
       currentDoc.transact(() => {
         if (!afterId) {
-          currentArray.push([newBlock]);
+          currentArray.push([ymap]);
         } else {
           const idx = findBlockIndex(currentArray, afterId);
           if (idx === -1) {
-            currentArray.push([newBlock]);
+            currentArray.push([ymap]);
           } else {
-            currentArray.insert(idx + 1, [newBlock]);
+            currentArray.insert(idx + 1, [ymap]);
           }
         }
       });
@@ -286,12 +410,12 @@ export function useDocumentYjs({
       if (currentArray.length <= 1) {
         currentArray.delete(0, currentArray.length);
         currentArray.push([
-          {
+          blockToYMap({
             id: generateBlockId(),
             type: 'paragraph',
             content: '',
             checked: false,
-          },
+          }),
         ]);
         return;
       }
@@ -315,15 +439,21 @@ export function useDocumentYjs({
     const current = currentArray.get(idx);
     if (!current) return;
 
-    currentDoc.transact(() => {
-      currentArray.delete(idx, 1);
-      currentArray.insert(idx, [
-        {
-          ...current,
-          checked: !current.checked,
-        },
-      ]);
-    });
+    if (current instanceof Y.Map) {
+      currentDoc.transact(() => {
+        current.set('checked', !current.get('checked'));
+      });
+    } else {
+      currentDoc.transact(() => {
+        currentArray.delete(idx, 1);
+        currentArray.insert(idx, [
+          blockToYMap({
+            ...current,
+            checked: !current.checked,
+          }),
+        ]);
+      });
+    }
   }, []);
 
   return {
@@ -335,6 +465,8 @@ export function useDocumentYjs({
     connectionStatus,
     isIndexedDbSynced,
     clientId,
+    collaborators,
+    remoteUsers: collaborators,
   };
 }
 
