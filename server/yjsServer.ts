@@ -6,11 +6,7 @@ import * as authProtocol from 'y-protocols/auth';
 import * as awarenessProtocol from 'y-protocols/awareness';
 import * as encoding from 'lib0/encoding';
 import * as decoding from 'lib0/decoding';
-// @ts-ignore y-websocket bin utils is a CJS module
-import yUtils from 'y-websocket/bin/utils';
 import { authorizeYjsConnection, type YjsAuthResult } from './lib/yjs/auth';
-
-const { getYDoc } = yUtils;
 
 const messageSync = 0;
 const messageAwareness = 1;
@@ -48,6 +44,72 @@ function closeConn(doc: any, conn: WebSocket): void {
   }
 }
 
+/**
+ * Shared in-memory Yjs document representation for WebSocket relay.
+ * Implemented natively using ESM yjs to avoid loading CommonJS yjs bundles
+ * which trigger duplicate import warnings and constructor check errors.
+ */
+export class WSSharedDoc extends Y.Doc {
+  name: string;
+  conns: Map<WebSocket, Set<number>>;
+  awareness: awarenessProtocol.Awareness;
+
+  constructor(name: string) {
+    super({ gc: true });
+    this.name = name;
+    this.conns = new Map();
+    this.awareness = new awarenessProtocol.Awareness(this);
+    this.awareness.setLocalState(null);
+
+    const awarenessChangeHandler = (
+      { added, updated, removed }: { added: number[]; updated: number[]; removed: number[] },
+      conn: any
+    ) => {
+      const changedClients = added.concat(updated, removed);
+      if (conn !== null) {
+        const connControlledIDs = this.conns.get(conn);
+        if (connControlledIDs !== undefined) {
+          added.forEach((clientID) => { connControlledIDs.add(clientID); });
+          removed.forEach((clientID) => { connControlledIDs.delete(clientID); });
+        }
+      }
+      const encoder = encoding.createEncoder();
+      encoding.writeVarUint(encoder, messageAwareness);
+      encoding.writeVarUint8Array(
+        encoder,
+        awarenessProtocol.encodeAwarenessUpdate(this.awareness, changedClients)
+      );
+      const buff = encoding.toUint8Array(encoder);
+      this.conns.forEach((_, c) => {
+        send(this, c, buff);
+      });
+    };
+
+    this.awareness.on('update', awarenessChangeHandler);
+
+    this.on('update', (update: Uint8Array) => {
+      const encoder = encoding.createEncoder();
+      encoding.writeVarUint(encoder, messageSync);
+      syncProtocol.writeUpdate(encoder, update);
+      const message = encoding.toUint8Array(encoder);
+      this.conns.forEach((_, conn) => {
+        send(this, conn, message);
+      });
+    });
+  }
+}
+
+const docs = new Map<string, WSSharedDoc>();
+
+export function getYDoc(docname: string, gc = true): WSSharedDoc {
+  let doc = docs.get(docname);
+  if (!doc) {
+    doc = new WSSharedDoc(docname);
+    doc.gc = gc;
+    docs.set(docname, doc);
+  }
+  return doc;
+}
 /**
  * Sets up a WebSocket connection with role-based access control (OWNER, EDITOR, VIEWER).
  */
@@ -220,7 +282,12 @@ export function createYjsServer(): {
   });
 
   const start = (
-    port = parseInt(process.env.YJS_PORT || process.env.PORT || '1234', 10),
+    port = parseInt(
+      process.env.YJS_PORT ||
+      (process.env.NODE_ENV === 'production' ? process.env.PORT : undefined) ||
+      (process.env.PORT && process.env.PORT !== '5000' ? process.env.PORT : '1234'),
+      10
+    ),
     host = process.env.YJS_HOST || process.env.HOST || '0.0.0.0'
   ): Promise<{ port: number; host: string }> => {
     return new Promise((resolve) => {
@@ -234,8 +301,13 @@ export function createYjsServer(): {
   return { server, wss, start };
 }
 
-// Auto-run if executed directly as script
-if (process.env.NODE_ENV !== 'test' && !process.env.VITEST) {
+// Auto-run ONLY if executed directly as script (e.g. npm run yjs or tsx server/yjsServer.ts)
+const isDirectRun = Boolean(
+  process.argv[1] &&
+  /[/\\]yjsServer\.(ts|js)$/.test(process.argv[1])
+);
+
+if (isDirectRun && process.env.NODE_ENV !== 'test' && !process.env.VITEST) {
   const { start } = createYjsServer();
   void start();
 }

@@ -12,7 +12,7 @@ export function getWsUrl(): string {
     (import.meta as any).env?.VITE_YJS_WS_URL;
 
   if (envUrl && typeof envUrl === 'string' && envUrl.trim().length > 0) {
-    return envUrl.trim();
+    return envUrl.trim().replace(/\/+$/, '');
   }
 
   // 2. If running in a browser across different computers on a LAN/network,
