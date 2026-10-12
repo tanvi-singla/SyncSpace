@@ -9,8 +9,10 @@
     "preview": "vite preview",
     "test": "vitest run",
     "prisma:generate": "prisma generate",
+    "server:dev": "tsx watch server/index.ts",
     "server": "tsx watch server/index.ts",
-    "yjs": "tsx server/yjsServer.ts"
+    "yjs": "tsx server/yjsServer.ts",
+    "start": "prisma generate && tsx server/index.ts"
   },
   "dependencies": {
     "@prisma/client": "^6.19.3",

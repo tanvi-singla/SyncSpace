@@ -1,13 +1,16 @@
+import http from 'http';
 import express from 'express';
 import type { Request, Response, NextFunction } from 'express';
 import cookieParser from 'cookie-parser';
 import cors from 'cors';
 import { authRouter } from './routes/auth';
 import { documentsRouter } from './routes/documents';
+import { createYjsServer, setupAuthorizedWSConnection } from './yjsServer';
+import { authorizeYjsConnection } from './lib/yjs/auth';
 
 const app = express();
 
-// CORS configuration for local and LAN Vite clients
+// CORS configuration for local, LAN, and production Vite clients
 const allowedOrigins = [
   process.env.CLIENT_URL || 'http://localhost:5173',
   'http://localhost:5173',
@@ -35,7 +38,7 @@ app.use(
 app.use(express.json());
 app.use(cookieParser());
 
-// Basic health check route
+// Basic health check route (used by Render health-check probe)
 app.get('/api/health', (_req: Request, res: Response) => {
   res.status(200).json({ status: 'ok', timestamp: new Date().toISOString() });
 });
@@ -52,12 +55,61 @@ app.use((err: unknown, _req: Request, res: Response, _next: NextFunction) => {
   res.status(500).json({ error: 'Internal server error' });
 });
 
-// Conditional listen guard so supertest runs without port collisions
-const PORT = process.env.PORT || 5000;
+// ---------------------------------------------------------------------------
+// Unified HTTP server
+// Render exposes ONE public port (process.env.PORT). The Yjs WebSocket server
+// piggy-backs on the same http.Server so no separate port is needed.
+// ---------------------------------------------------------------------------
+const PORT = parseInt(process.env.PORT || '5000', 10);
+const HOST = '0.0.0.0'; // Required for Render (and any container runtime)
 
 if (process.env.NODE_ENV !== 'test') {
-  app.listen(PORT, () => {
-    console.log(`SyncSpace server running on http://localhost:${PORT}`);
+  // Create a plain HTTP server that wraps Express
+  const httpServer = http.createServer(app);
+
+  // Attach Yjs WebSocket upgrade handler to the same http.Server
+  const { wss } = createYjsServer();
+
+  httpServer.on('upgrade', async (req, socket, head) => {
+    try {
+      const url = new URL(req.url || '/', `http://${req.headers.host || 'localhost'}`);
+      const rawRoomName = url.pathname.slice(1).split('?')[0];
+
+      // Only handle WebSocket upgrades that look like Yjs room paths.
+      // Leave other upgrade paths (e.g. Vite HMR in dev) alone.
+      if (!rawRoomName) {
+        socket.write('HTTP/1.1 400 Bad Request\r\n\r\nRoom name required');
+        socket.destroy();
+        return;
+      }
+
+      const authResult = await authorizeYjsConnection(req, rawRoomName, url);
+
+      if (!authResult.authorized) {
+        const statusText =
+          authResult.status === 401 ? 'Unauthorized'
+          : authResult.status === 403 ? 'Forbidden'
+          : 'Not Found';
+        socket.write(
+          `HTTP/1.1 ${authResult.status} ${statusText}\r\nContent-Type: text/plain\r\n\r\n${authResult.reason || statusText}`
+        );
+        socket.destroy();
+        return;
+      }
+
+      wss.handleUpgrade(req, socket, head, (ws) => {
+        setupAuthorizedWSConnection(ws, req, authResult, rawRoomName);
+      });
+    } catch (err) {
+      console.error('[Yjs Server] Upgrade error:', err);
+      socket.write('HTTP/1.1 500 Internal Server Error\r\n\r\n');
+      socket.destroy();
+    }
+  });
+
+  httpServer.listen(PORT, HOST, () => {
+    console.log(`SyncSpace server running on http://${HOST}:${PORT}`);
+    console.log(`🌾 Yjs WebSocket relay available on ws://${HOST}:${PORT}`);
   });
 }
 

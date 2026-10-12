@@ -15,9 +15,9 @@ model User {
   avatarUrl           String?              @map("avatar_url")
   createdAt           DateTime             @default(now()) @map("created_at")
   updatedAt           DateTime             @updatedAt @map("updated_at")
+  documentShares      DocumentShare[]
   documents           Document[]
   passwordResetTokens PasswordResetToken[]
-  documentShares      DocumentShare[]
 
   @@index([email])
   @@map("users")
@@ -35,11 +35,6 @@ model PasswordResetToken {
   @@index([userId])
   @@index([tokenHash])
   @@map("password_reset_tokens")
-}
-
-enum DocumentPermission {
-  VIEWER
-  EDITOR
 }
 
 model DocumentShare {
@@ -67,11 +62,15 @@ model Document {
   createdAt  DateTime        @default(now()) @map("created_at")
   updatedAt  DateTime        @updatedAt @map("updated_at")
   userId     String          @map("user_id")
-  user       User            @relation(fields: [userId], references: [id], onDelete: Cascade)
   shares     DocumentShare[]
+  user       User            @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@index([userId])
   @@index([userId, isDeleted])
   @@map("documents")
 }
 
+enum DocumentPermission {
+  VIEWER
+  EDITOR
+}

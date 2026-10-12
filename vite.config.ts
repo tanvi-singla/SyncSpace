@@ -11,7 +11,10 @@ export default defineConfig(({ mode }) => {
 
     define: {
       'import.meta.env.VITE_WS_URL': JSON.stringify(
-        env.VITE_WS_URL || 'ws://172.20.10.6:1234'
+        // In production Render builds, set VITE_WS_URL as a Render environment
+        // variable (e.g. wss://syncspace-api.onrender.com) before the build step.
+        // Locally it defaults to the Express server port (Yjs is on the same port).
+        env.VITE_WS_URL || 'ws://localhost:5000'
       ),
     },
 
