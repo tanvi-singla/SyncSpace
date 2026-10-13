@@ -1,4 +1,4 @@
-import React, { useState, useMemo, useEffect, useRef } from 'react';
+import React, { useState, useMemo, useEffect, useRef, useLayoutEffect, useCallback } from 'react';
 import {
   Image as ImageIcon,
   PlusCircle,
@@ -36,6 +36,7 @@ import { CoverPickerModal } from '../components/document/CoverPickerModal';
 import { useWorkspace } from '../hooks/useWorkspace';
 import { useDocumentUI } from '../context/DocumentUIContext';
 import { useDocumentYjs } from '../hooks/useDocumentYjs';
+import { useAuth } from '../context/AuthContext';
 
 export interface DocumentWorkspaceProps {
   workspaceState?: ReturnType<typeof useWorkspace>;
@@ -48,6 +49,7 @@ export function DocumentWorkspace({ workspaceState, showTopBar = false, document
   const currentDocId = documentId || workspaceState?.currentDocId || routeDocId || '';
   const currentDocMeta = currentDocId && workspaceState?.documents ? workspaceState.documents[currentDocId] : undefined;
   const docUI = useDocumentUI();
+  const { user } = useAuth();
 
   // Document Title & Core State
   const [docTitle, setDocTitle] = useState(currentDocMeta?.title || 'Untitled Document');
@@ -62,6 +64,10 @@ export function DocumentWorkspace({ workspaceState, showTopBar = false, document
   const [subtitle, setSubtitle] = useState('');
   const [showZoomMenu, setShowZoomMenu] = useState(false);
   const [isLocked, setIsLocked] = useState(false);
+
+  // Role permissions: VIEWERS cannot edit
+  const isViewer = currentDocMeta?.permission === 'VIEWER';
+  const isReadOnly = isLocked || isViewer;
 
   // Subpages state
   const [subpages, setSubpages] = useState<{ id: string; title: string }[]>([]);
@@ -96,8 +102,16 @@ export function DocumentWorkspace({ workspaceState, showTopBar = false, document
     toggleChecklist,
     connectionStatus,
     isIndexedDbSynced,
+    collaborators,
   } = useDocumentYjs({
     documentId: currentDocId,
+    user: user
+      ? {
+          id: user.id,
+          name: user.name,
+          color: '#00667E',
+        }
+      : undefined,
   });
 
   const [slashMenuOpen, setSlashMenuOpen] = useState(false);
@@ -109,8 +123,8 @@ export function DocumentWorkspace({ workspaceState, showTopBar = false, document
     updateBlock(id, content, extra);
   };
 
-  const handleAddBlock = (type: BlockType = 'paragraph', afterId?: string) => {
-    addBlock(type, afterId);
+  const handleAddBlock = (type: BlockType = 'paragraph', afterId?: string): string => {
+    return addBlock(type, afterId);
   };
 
   const handleDeleteBlock = (id: string) => {
@@ -135,7 +149,13 @@ export function DocumentWorkspace({ workspaceState, showTopBar = false, document
       setSlashIndex(0);
     } else if (e.key === 'Enter' && !e.shiftKey && !slashMenuOpen) {
       e.preventDefault();
-      handleAddBlock('paragraph', blockId);
+      const newBlockId = handleAddBlock('paragraph', blockId);
+      if (newBlockId) {
+        requestAnimationFrame(() => {
+          const el = document.querySelector(`[data-block-id="${newBlockId}"]`) as HTMLElement;
+          if (el) el.focus();
+        });
+      }
     }
   };
 
@@ -144,8 +164,18 @@ export function DocumentWorkspace({ workspaceState, showTopBar = false, document
     const current = blocks.find(b => b.id === slashBlockId);
     if (current && (current.content.trim() === '/' || current.content.trim() === '')) {
       handleUpdateBlock(slashBlockId, '', { type: item.type });
+      requestAnimationFrame(() => {
+        const el = document.querySelector(`[data-block-id="${slashBlockId}"]`) as HTMLElement;
+        if (el) el.focus();
+      });
     } else {
-      handleAddBlock(item.type, slashBlockId);
+      const newBlockId = handleAddBlock(item.type, slashBlockId);
+      if (newBlockId) {
+        requestAnimationFrame(() => {
+          const el = document.querySelector(`[data-block-id="${newBlockId}"]`) as HTMLElement;
+          if (el) el.focus();
+        });
+      }
     }
     setSlashMenuOpen(false);
     setSlashBlockId(null);
@@ -334,7 +364,7 @@ export function DocumentWorkspace({ workspaceState, showTopBar = false, document
             {/* Document Title Heading */}
             {headerToggles.pageTitleIcon && (
               <h1
-                contentEditable={!isLocked}
+                contentEditable={!isReadOnly}
                 suppressContentEditableWarning
                 onBlur={e => handleTitleChange(e.currentTarget.textContent || 'Untitled Document')}
                 className={`text-4xl sm:text-5xl font-extrabold text-workspace-900 tracking-tight outline-none mb-3 ${fontClass} empty:before:content-['Untitled_Document'] empty:before:text-workspace-300`}
@@ -348,7 +378,7 @@ export function DocumentWorkspace({ workspaceState, showTopBar = false, document
               <div className="mb-4">
                 <input
                   type="text"
-                  disabled={isLocked}
+                  disabled={isReadOnly}
                   placeholder="Add a subtitle..."
                   value={subtitle}
                   onChange={e => setSubtitle(e.target.value)}
@@ -460,7 +490,7 @@ export function DocumentWorkspace({ workspaceState, showTopBar = false, document
                 <div key={block.id} id={`block-${block.id}`} className="relative group/block flex items-start -ml-8">
                   
                   {/* Hover Actions: Plus and Delete */}
-                  {!isLocked && (
+                  {!isReadOnly && (
                     <div className="w-8 flex items-center justify-center gap-0.5 opacity-0 group-hover/block:opacity-100 transition-opacity pt-1 select-none pr-1">
                       <button
                         type="button"
@@ -483,16 +513,16 @@ export function DocumentWorkspace({ workspaceState, showTopBar = false, document
 
                   {/* Block Content Node */}
                   <div className="flex-1 min-w-0 relative">
-                    {renderDocumentBlock({
-                      block,
-                      isLocked,
-                      onUpdateBlock: handleUpdateBlock,
-                      onToggleCheck: handleToggleCheck,
-                      onKeyDown: handleBlockKeyDown,
-                    })}
+                    <DocumentBlockView
+                      block={block}
+                      isLocked={isReadOnly}
+                      onUpdateBlock={handleUpdateBlock}
+                      onToggleCheck={handleToggleCheck}
+                      onKeyDown={handleBlockKeyDown}
+                    />
 
                     {/* Slash Command Menu Popup */}
-                    {slashMenuOpen && slashBlockId === block.id && !isLocked && (
+                    {slashMenuOpen && slashBlockId === block.id && !isReadOnly && (
                       <SlashCommandMenu
                         isOpen={slashMenuOpen}
                         onClose={() => setSlashMenuOpen(false)}
@@ -603,44 +633,104 @@ export function DocumentWorkspace({ workspaceState, showTopBar = false, document
   );
 }
 
-function renderDocumentBlock({
-  block,
-  isLocked,
-  onUpdateBlock,
-  onToggleCheck,
-  onKeyDown,
-}: {
+interface DocumentBlockViewProps {
   block: DocumentBlock;
   isLocked: boolean;
   onUpdateBlock: (id: string, content: string, extra?: Partial<DocumentBlock>) => void;
   onToggleCheck: (id: string) => void;
   onKeyDown: (e: React.KeyboardEvent, blockId: string) => void;
-}) {
+}
+
+const DocumentBlockView: React.FC<DocumentBlockViewProps> = React.memo(({
+  block,
+  isLocked,
+  onUpdateBlock,
+  onToggleCheck,
+  onKeyDown,
+}) => {
+  const contentRef = useRef<HTMLElement | null>(null);
+
+  const setRef = useCallback(
+    (node: HTMLElement | null) => {
+      contentRef.current = node;
+      if (node && node.textContent !== block.content && document.activeElement !== node) {
+        node.textContent = block.content;
+      }
+    },
+    [block.content]
+  );
+
+  useLayoutEffect(() => {
+    const el = contentRef.current;
+    if (!el) return;
+
+    if (document.activeElement === el) {
+      if (el.textContent === block.content) return;
+
+      const sel = window.getSelection();
+      let offset = 0;
+      if (sel && sel.rangeCount > 0) {
+        offset = sel.getRangeAt(0).startOffset;
+      }
+
+      el.textContent = block.content;
+
+      if (sel && el.firstChild) {
+        try {
+          const range = document.createRange();
+          const safeOffset = Math.min(offset, el.firstChild.textContent?.length || 0);
+          range.setStart(el.firstChild, safeOffset);
+          range.collapse(true);
+          sel.removeAllRanges();
+          sel.addRange(range);
+        } catch {
+          // Graceful fallback
+        }
+      }
+    } else {
+      if (el.textContent !== block.content) {
+        el.textContent = block.content;
+      }
+    }
+  }, [block.content, block.type]);
+
+  const handleInput = (e: React.FormEvent<HTMLElement>) => {
+    const text = e.currentTarget.textContent || '';
+    onUpdateBlock(block.id, text);
+  };
+
+  const handleBlur = (e: React.FocusEvent<HTMLElement>) => {
+    const text = e.currentTarget.textContent || '';
+    onUpdateBlock(block.id, text);
+  };
+
   switch (block.type) {
     case 'heading1':
       return (
         <h2
+          ref={setRef}
+          data-block-id={block.id}
           contentEditable={!isLocked}
           suppressContentEditableWarning
+          onInput={handleInput}
+          onBlur={handleBlur}
           onKeyDown={e => onKeyDown(e, block.id)}
-          onBlur={e => onUpdateBlock(block.id, e.currentTarget.textContent || '')}
           className="text-2xl sm:text-3xl font-bold text-workspace-900 mt-5 mb-2 outline-none empty:before:content-['Heading_1'] empty:before:text-workspace-300"
-        >
-          {block.content}
-        </h2>
+        />
       );
 
     case 'heading2':
       return (
         <h3
+          ref={setRef}
+          data-block-id={block.id}
           contentEditable={!isLocked}
           suppressContentEditableWarning
+          onInput={handleInput}
+          onBlur={handleBlur}
           onKeyDown={e => onKeyDown(e, block.id)}
-          onBlur={e => onUpdateBlock(block.id, e.currentTarget.textContent || '')}
           className="text-xl sm:text-2xl font-bold text-workspace-800 mt-4 mb-1.5 outline-none empty:before:content-['Heading_2'] empty:before:text-workspace-300"
-        >
-          {block.content}
-        </h3>
+        />
       );
 
     case 'checklist':
@@ -648,6 +738,7 @@ function renderDocumentBlock({
         <div className="flex items-start gap-2.5 my-1">
           <button
             type="button"
+            disabled={isLocked}
             onClick={() => onToggleCheck(block.id)}
             className={`mt-1 w-4 h-4 rounded border flex items-center justify-center transition-colors cursor-pointer ${
               block.checked
@@ -658,16 +749,17 @@ function renderDocumentBlock({
             {block.checked && <Check size={11} strokeWidth={3} />}
           </button>
           <div
+            ref={setRef}
+            data-block-id={block.id}
             contentEditable={!isLocked}
             suppressContentEditableWarning
+            onInput={handleInput}
+            onBlur={handleBlur}
             onKeyDown={e => onKeyDown(e, block.id)}
-            onBlur={e => onUpdateBlock(block.id, e.currentTarget.textContent || '')}
             className={`flex-1 outline-none text-workspace-800 leading-relaxed ${
               block.checked ? 'line-through text-workspace-400' : ''
             } empty:before:content-['To-do...'] empty:before:text-workspace-300`}
-          >
-            {block.content}
-          </div>
+          />
         </div>
       );
 
@@ -676,14 +768,15 @@ function renderDocumentBlock({
         <div className="flex items-start gap-2.5 my-1">
           <span className="text-workspace-400 select-none text-base leading-relaxed">•</span>
           <div
+            ref={setRef}
+            data-block-id={block.id}
             contentEditable={!isLocked}
             suppressContentEditableWarning
+            onInput={handleInput}
+            onBlur={handleBlur}
             onKeyDown={e => onKeyDown(e, block.id)}
-            onBlur={e => onUpdateBlock(block.id, e.currentTarget.textContent || '')}
             className="flex-1 outline-none text-workspace-800 leading-relaxed empty:before:content-['List_item...'] empty:before:text-workspace-300"
-          >
-            {block.content}
-          </div>
+          />
         </div>
       );
 
@@ -692,14 +785,15 @@ function renderDocumentBlock({
         <div className="flex items-start gap-2.5 my-1">
           <span className="text-workspace-400 select-none text-xs font-semibold mt-1">1.</span>
           <div
+            ref={setRef}
+            data-block-id={block.id}
             contentEditable={!isLocked}
             suppressContentEditableWarning
+            onInput={handleInput}
+            onBlur={handleBlur}
             onKeyDown={e => onKeyDown(e, block.id)}
-            onBlur={e => onUpdateBlock(block.id, e.currentTarget.textContent || '')}
             className="flex-1 outline-none text-workspace-800 leading-relaxed empty:before:content-['Numbered_item...'] empty:before:text-workspace-300"
-          >
-            {block.content}
-          </div>
+          />
         </div>
       );
 
@@ -707,14 +801,15 @@ function renderDocumentBlock({
       return (
         <div className="border-l-2 border-primary-600 pl-4 py-1 my-2 italic text-workspace-700 bg-primary-50/30 rounded-r-lg">
           <div
+            ref={setRef}
+            data-block-id={block.id}
             contentEditable={!isLocked}
             suppressContentEditableWarning
+            onInput={handleInput}
+            onBlur={handleBlur}
             onKeyDown={e => onKeyDown(e, block.id)}
-            onBlur={e => onUpdateBlock(block.id, e.currentTarget.textContent || '')}
             className="outline-none empty:before:content-['Empty_quote...'] empty:before:text-workspace-300"
-          >
-            {block.content}
-          </div>
+          />
         </div>
       );
 
@@ -722,16 +817,17 @@ function renderDocumentBlock({
     default:
       return (
         <div
+          ref={setRef}
+          data-block-id={block.id}
           contentEditable={!isLocked}
           suppressContentEditableWarning
+          onInput={handleInput}
+          onBlur={handleBlur}
           onKeyDown={e => onKeyDown(e, block.id)}
-          onBlur={e => onUpdateBlock(block.id, e.currentTarget.textContent || '')}
           className="outline-none text-workspace-800 leading-relaxed min-h-[24px] empty:before:content-['Press_/_for_commands_or_start_writing...'] empty:before:text-workspace-400 empty:before:cursor-text"
-        >
-          {block.content}
-        </div>
+        />
       );
   }
-}
+});
 
 export default DocumentWorkspace;

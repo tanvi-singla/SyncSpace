@@ -265,4 +265,207 @@ describe('Document Yjs CRDT Logic & Room Isolation', () => {
     const statesAfterLeave = awareness2.getStates();
     expect(statesAfterLeave.get(doc1.clientID)).toBeUndefined();
   });
+
+  it('propagates local keystroke edits immediately to remote client observers via observeDeep', () => {
+    const doc1 = new Y.Doc();
+    const doc2 = new Y.Doc();
+
+    const arr1 = doc1.getArray<any>('blocks');
+    const arr2 = doc2.getArray<any>('blocks');
+
+    // Simulate instant WebSocket bi-directional transport
+    doc1.on('update', (update) => {
+      Y.applyUpdate(doc2, update);
+    });
+    doc2.on('update', (update) => {
+      Y.applyUpdate(doc1, update);
+    });
+
+    // Client 1 creates initial paragraph block
+    const bMap = new Y.Map();
+    bMap.set('id', 'b-live-1');
+    bMap.set('type', 'paragraph');
+    bMap.set('content', '');
+    bMap.set('checked', false);
+    doc1.transact(() => {
+      arr1.push([bMap]);
+    });
+
+    // Track remote client notifications
+    let observerCallCount = 0;
+    let lastObservedContent = '';
+    const observer = () => {
+      observerCallCount++;
+      const block = arr2.get(0);
+      lastObservedContent = block.get('content');
+    };
+    arr2.observeDeep(observer);
+
+    // Simulate character-by-character live typing from client 1 ("H", "e", "l", "l", "o")
+    const typedChars = ['H', 'He', 'Hel', 'Hell', 'Hello'];
+    for (const text of typedChars) {
+      doc1.transact(() => {
+        bMap.set('content', text);
+      });
+    }
+
+    // Client 2 observer fired on every keystroke
+    expect(observerCallCount).toBe(5);
+    expect(lastObservedContent).toBe('Hello');
+    expect(arr2.get(0).get('content')).toBe('Hello');
+
+    // Clean up observer
+    arr2.unobserveDeep(observer);
+  });
+
+  it('preserves offline edits and converges upon reconnection without data loss', () => {
+    const docOnline = new Y.Doc();
+    const docOffline = new Y.Doc();
+
+    const arrOnline = docOnline.getArray<any>('blocks');
+    const arrOffline = docOffline.getArray<any>('blocks');
+
+    // Initial shared state: 1 shared block
+    docOnline.transact(() => {
+      const b = new Y.Map();
+      b.set('id', 'block-1');
+      b.set('type', 'paragraph');
+      b.set('content', 'Initial base content');
+      b.set('checked', false);
+      arrOnline.push([b]);
+    });
+
+    // Initial sync
+    Y.applyUpdate(docOffline, Y.encodeStateAsUpdate(docOnline));
+
+    // Client goes offline and types 2 new blocks while disconnected
+    docOffline.transact(() => {
+      arrOffline.get(0).set('content', 'Initial base content (modified offline)');
+
+      const offlineBlock = new Y.Map();
+      offlineBlock.set('id', 'block-offline-2');
+      offlineBlock.set('type', 'checklist');
+      offlineBlock.set('content', 'Offline checklist item');
+      offlineBlock.set('checked', true);
+      arrOffline.push([offlineBlock]);
+    });
+
+    // Meanwhile, online client adds another block concurrently
+    docOnline.transact(() => {
+      const onlineBlock = new Y.Map();
+      onlineBlock.set('id', 'block-online-3');
+      onlineBlock.set('type', 'heading2');
+      onlineBlock.set('content', 'Concurrent online section');
+      onlineBlock.set('checked', false);
+      arrOnline.push([onlineBlock]);
+    });
+
+    // Reconnection occurs: updates are exchanged between offline and online
+    const offlineUpdate = Y.encodeStateAsUpdate(docOffline);
+    const onlineUpdate = Y.encodeStateAsUpdate(docOnline);
+
+    Y.applyUpdate(docOnline, offlineUpdate);
+    Y.applyUpdate(docOffline, onlineUpdate);
+
+    // Both documents must converge to the exact same 3 blocks
+    expect(arrOnline.length).toBe(3);
+    expect(arrOffline.length).toBe(3);
+
+    // Check first block merged content
+    expect(arrOnline.get(0).get('content')).toBe('Initial base content (modified offline)');
+    expect(arrOffline.get(0).get('content')).toBe('Initial base content (modified offline)');
+
+    // Check offline block is preserved on both
+    const offlineBlockInOnline = [arrOnline.get(1), arrOnline.get(2)].find(b => b.get('id') === 'block-offline-2');
+    expect(offlineBlockInOnline).toBeDefined();
+    expect(offlineBlockInOnline?.get('content')).toBe('Offline checklist item');
+    expect(offlineBlockInOnline?.get('checked')).toBe(true);
+
+    // Check online block is preserved on both
+    const onlineBlockInOffline = [arrOffline.get(1), arrOffline.get(2)].find(b => b.get('id') === 'block-online-3');
+    expect(onlineBlockInOffline).toBeDefined();
+    expect(onlineBlockInOffline?.get('content')).toBe('Concurrent online section');
+  });
+
+  it('merges concurrent multi-block edits from two clients without race conditions or duplication', () => {
+    const docA = new Y.Doc();
+    const docB = new Y.Doc();
+
+    const arrA = docA.getArray<any>('blocks');
+    const arrB = docB.getArray<any>('blocks');
+
+    // Create 2 initial blocks
+    docA.transact(() => {
+      const b1 = new Y.Map();
+      b1.set('id', 'blk-1');
+      b1.set('type', 'heading1');
+      b1.set('content', 'Sprint Goals');
+      b1.set('checked', false);
+
+      const b2 = new Y.Map();
+      b2.set('id', 'blk-2');
+      b2.set('type', 'paragraph');
+      b2.set('content', 'Team objectives for Q4');
+      b2.set('checked', false);
+
+      arrA.push([b1, b2]);
+    });
+
+    Y.applyUpdate(docB, Y.encodeStateAsUpdate(docA));
+
+    // Client A edits block 1 title
+    docA.transact(() => {
+      arrA.get(0).set('content', 'Sprint Goals 2026');
+    });
+
+    // Client B edits block 2 description concurrently
+    docB.transact(() => {
+      arrB.get(1).set('content', 'Team objectives for Q4 - Updated');
+    });
+
+    // Sync
+    Y.applyUpdate(docA, Y.encodeStateAsUpdate(docB));
+    Y.applyUpdate(docB, Y.encodeStateAsUpdate(docA));
+
+    expect(arrA.length).toBe(2);
+    expect(arrB.length).toBe(2);
+    expect(arrA.get(0).get('content')).toBe('Sprint Goals 2026');
+    expect(arrA.get(1).get('content')).toBe('Team objectives for Q4 - Updated');
+    expect(arrB.get(0).get('content')).toBe('Sprint Goals 2026');
+    expect(arrB.get(1).get('content')).toBe('Team objectives for Q4 - Updated');
+  });
+
+  it('properly cleans up observeDeep listeners on unmount without memory leaks', () => {
+    const doc = new Y.Doc();
+    const arr = doc.getArray<any>('blocks');
+
+    let calls = 0;
+    const observer = () => {
+      calls++;
+    };
+
+    arr.observeDeep(observer);
+
+    doc.transact(() => {
+      const b = new Y.Map();
+      b.set('id', 'blk-x');
+      b.set('type', 'paragraph');
+      b.set('content', 'hello');
+      arr.push([b]);
+    });
+
+    expect(calls).toBe(1);
+
+    // Unobserve (simulating hook unmount cleanup)
+    arr.unobserveDeep(observer);
+
+    doc.transact(() => {
+      arr.get(0).set('content', 'world');
+    });
+
+    // Observer was unobserved and must NOT be called again
+    expect(calls).toBe(1);
+
+    doc.destroy();
+  });
 });
