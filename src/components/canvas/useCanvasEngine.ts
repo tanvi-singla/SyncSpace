@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useCallback } from 'react';
+import { useState, useEffect, useLayoutEffect, useRef, useCallback } from 'react';
 import * as Y from 'yjs';
 import { IndexeddbPersistence } from 'y-indexeddb';
 import { WebsocketProvider } from 'y-websocket';
@@ -18,10 +18,11 @@ import {
 import { 
   getShapeAnchorPoint, 
   getClosestAnchorSide, 
-  calculateElementsBounds 
+  calculateElementsBounds,
+  transformConnectorPoints,
 } from '../../utils/canvasGeometry';
 import { getWsUrl } from '../../lib/yjs/config';
-import { getCanvasRoomName } from '../../lib/yjs/rooms';
+import { getCanvasRoomName, isCanvasRoomRestored } from '../../lib/yjs/rooms';
 
 interface UseCanvasEngineOptions {
   roomId: string;
@@ -50,7 +51,7 @@ export function useCanvasEngine({
   // Connection & Sync state
   const [connectionStatus, setConnectionStatus] = useState<ConnectionStatus>('connecting');
   const [saveStatus, setSaveStatus] = useState<'saved' | 'saving' | 'synced'>('synced');
-  const [isIndexedDbSynced, setIsIndexedDbSynced] = useState(false);
+  const [indexedDbSyncedRoom, setIndexedDbSyncedRoom] = useState<string | null>(null);
   const [remoteUsers, setRemoteUsers] = useState<UserPresence[]>([]);
 
   // History state for Undo / Redo
@@ -67,6 +68,21 @@ export function useCanvasEngine({
   const idbRef = useRef<IndexeddbPersistence | null>(null);
   const elementsMapRef = useRef<Y.Map<CanvasElement> | null>(null);
   const lastCursorBroadcastRef = useRef<number>(0);
+  const saveStatusTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const markSavedSoon = useCallback(() => {
+    if (saveStatusTimerRef.current) clearTimeout(saveStatusTimerRef.current);
+    saveStatusTimerRef.current = setTimeout(() => {
+      setSaveStatus('synced');
+      saveStatusTimerRef.current = null;
+    }, 300);
+  }, []);
+
+  const isIndexedDbSynced = isCanvasRoomRestored(roomId || 'default', indexedDbSyncedRoom);
+
+  useLayoutEffect(() => {
+    setIndexedDbSyncedRoom(null);
+  }, [roomId]);
 
   // Helper to record an undo snapshot before mutating
   const pushHistorySnapshot = useCallback((currentList: CanvasElement[]) => {
@@ -74,6 +90,20 @@ export function useCanvasEngine({
     setUndoStack((prev) => [...prev.slice(-30), JSON.parse(JSON.stringify(currentList))]);
     setRedoStack([]); // Clear redo stack on new action
   }, []);
+
+  const recordHistorySnapshot = useCallback(() => {
+    pushHistorySnapshot(elements);
+  }, [elements, pushHistorySnapshot]);
+
+  // Selection, viewport and history belong to the active room. Reset them when
+  // navigating between documents so the previous canvas cannot leak UI state.
+  useEffect(() => {
+    setElements([]);
+    setSelectedIds([]);
+    setUndoStack([]);
+    setRedoStack([]);
+    setViewport({ x: 0, y: 0, zoom: 1 });
+  }, [roomId]);
 
   // Initialize Y.Doc, IndexedDB, WebSocket
   useEffect(() => {
@@ -99,13 +129,14 @@ export function useCanvasEngine({
 
     let indexedDbReady = false;
     let websocketSynced = false;
+    let websocketStatus: 'connected' | 'connecting' | 'disconnected' = 'connecting';
     let initialContentSeeded = false;
 
     // Do not seed while a remote document may still be arriving: doing so would
     // accidentally add the demo items to an existing collaborator's canvas.
     const seedInitialContentIfNeeded = () => {
       if (!indexedDbReady || initialContentSeeded || elementsMap.size !== 0) return;
-      if (!websocketSynced && connectionStatus === 'connected') return;
+      if (!websocketSynced && websocketStatus !== 'disconnected') return;
       initialContentSeeded = true;
       doc.transact(() => {
         INITIAL_DEMO_CANVAS_ITEMS.forEach((item) => {
@@ -116,12 +147,9 @@ export function useCanvasEngine({
 
     const handleIndexedDbSynced = () => {
       indexedDbReady = true;
-      setIsIndexedDbSynced(true);
+      setIndexedDbSyncedRoom(docName);
       setSaveStatus('synced');
       seedInitialContentIfNeeded();
-      setTimeout(() => {
-        if (!websocketSynced) seedInitialContentIfNeeded();
-      }, 500);
       syncElementsFromYjs();
     };
     idbProvider.on('synced', handleIndexedDbSynced);
@@ -139,10 +167,14 @@ export function useCanvasEngine({
       providerRef.current = wsProvider;
 
       wsProvider.on('status', (event: { status: 'connected' | 'connecting' | 'disconnected' }) => {
+        websocketStatus = event.status;
         setConnectionStatus(event.status);
         if (event.status === 'connected') setSaveStatus('synced');
         else if (event.status === 'connecting') setSaveStatus('saving');
-        else setSaveStatus('saved');
+        else {
+          setSaveStatus('saved');
+          seedInitialContentIfNeeded();
+        }
       });
 
       wsProvider.on('sync', (isSynced: boolean) => {
@@ -152,8 +184,10 @@ export function useCanvasEngine({
 
       wsProvider.on('connection-error', () => {
         // The provider retries with backoff; IndexedDB remains fully usable.
+        websocketStatus = 'disconnected';
         setConnectionStatus('disconnected');
         setSaveStatus('saved');
+        seedInitialContentIfNeeded();
       });
 
       const awareness = wsProvider.awareness;
@@ -194,12 +228,16 @@ export function useCanvasEngine({
       };
     } catch (e) {
       console.warn('WebSocket connection fallback to local-only IndexedDB mode:', e);
+      websocketStatus = 'disconnected';
       setConnectionStatus('disconnected');
+      seedInitialContentIfNeeded();
     }
 
     syncElementsFromYjs();
 
     return () => {
+      if (saveStatusTimerRef.current) clearTimeout(saveStatusTimerRef.current);
+      saveStatusTimerRef.current = null;
       elementsMap.unobserve(handleElementsChange);
       idbProvider.off('synced', handleIndexedDbSynced);
       cleanupAwareness?.();
@@ -286,9 +324,9 @@ export function useCanvasEngine({
       elementsMapRef.current?.set(newId, completeElement);
     });
 
-    setTimeout(() => setSaveStatus('synced'), 300);
+    markSavedSoon();
     return newId;
-  }, [elements, pushHistorySnapshot]);
+  }, [elements, pushHistorySnapshot, markSavedSoon]);
 
   // Update Single Element
   const updateElement = useCallback((id: string, updates: Partial<CanvasElement>, recordHistory = true) => {
@@ -302,6 +340,10 @@ export function useCanvasEngine({
     const updated = {
       ...existing,
       ...updates,
+      ...((existing.type === 'line' || existing.type === 'arrow') && !existing.startBinding && !existing.endBinding &&
+        (updates.x !== undefined || updates.y !== undefined || updates.width !== undefined || updates.height !== undefined)
+        ? transformConnectorPoints(existing, updates)
+        : {}),
       updatedAt: Date.now(),
     };
 
@@ -338,8 +380,8 @@ export function useCanvasEngine({
       }
     });
 
-    setTimeout(() => setSaveStatus('synced'), 300);
-  }, [elements, pushHistorySnapshot]);
+    markSavedSoon();
+  }, [elements, pushHistorySnapshot, markSavedSoon]);
 
   // Update Multiple Elements Simultaneously
   const updateElements = useCallback((updatesMap: Record<string, Partial<CanvasElement>>, recordHistory = true) => {
@@ -353,7 +395,15 @@ export function useCanvasEngine({
       Object.entries(updatesMap).forEach(([id, updates]) => {
         const existing = elementsMapRef.current?.get(id);
         if (existing) {
-          const updated = { ...existing, ...updates, updatedAt: Date.now() };
+          const updated = {
+            ...existing,
+            ...updates,
+            ...((existing.type === 'line' || existing.type === 'arrow') && !existing.startBinding && !existing.endBinding &&
+              (updates.x !== undefined || updates.y !== undefined || updates.width !== undefined || updates.height !== undefined)
+              ? transformConnectorPoints(existing, updates)
+              : {}),
+            updatedAt: Date.now(),
+          };
           elementsMapRef.current?.set(id, updated);
           updatedElementsRecord[id] = updated;
         }
@@ -393,8 +443,8 @@ export function useCanvasEngine({
       });
     });
 
-    setTimeout(() => setSaveStatus('synced'), 300);
-  }, [elements, pushHistorySnapshot]);
+    markSavedSoon();
+  }, [elements, pushHistorySnapshot, markSavedSoon]);
 
   // Delete Elements
   const deleteElements = useCallback((ids: string[]) => {
@@ -438,8 +488,8 @@ export function useCanvasEngine({
     });
 
     setSelectedIds((prev) => prev.filter((id) => !idSet.has(id)));
-    setTimeout(() => setSaveStatus('synced'), 300);
-  }, [elements, pushHistorySnapshot]);
+    markSavedSoon();
+  }, [elements, pushHistorySnapshot, markSavedSoon]);
 
   // Duplicate Elements
   const duplicateElements = useCallback((ids: string[]) => {
@@ -489,8 +539,8 @@ export function useCanvasEngine({
     });
 
     setSelectedIds(newSelectedIds);
-    setTimeout(() => setSaveStatus('synced'), 300);
-  }, [elements, pushHistorySnapshot]);
+    markSavedSoon();
+  }, [elements, pushHistorySnapshot, markSavedSoon]);
 
   // Bring to Front
   const bringToFront = useCallback((ids: string[]) => {
@@ -783,6 +833,7 @@ export function useCanvasEngine({
     addElement,
     updateElement,
     updateElements,
+    recordHistorySnapshot,
     deleteElements,
     duplicateElements,
     bringToFront,

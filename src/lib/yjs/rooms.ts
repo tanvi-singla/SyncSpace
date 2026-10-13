@@ -29,6 +29,11 @@ export function getCanvasRoomName(documentId: string): string {
   return `${ROOM_PREFIX_CANVAS}${id}`;
 }
 
+/** True only after the local IndexedDB provider restored the active canvas room. */
+export function isCanvasRoomRestored(documentId: string, restoredRoomName: string | null): boolean {
+  return restoredRoomName !== null && getCanvasRoomName(documentId || 'default') === restoredRoomName;
+}
+
 export type ParsedRoom = {
   type: 'doc' | 'canvas' | 'directory' | 'unknown';
   documentId?: string;

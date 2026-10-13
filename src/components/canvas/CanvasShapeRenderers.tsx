@@ -502,12 +502,14 @@ interface ConnectorRendererProps {
   element: CanvasElement;
   elementsMap: Map<string, CanvasElement> | Record<string, CanvasElement>;
   isSelected: boolean;
+  onPointerDown?: (event: React.PointerEvent<SVGPathElement>) => void;
 }
 
 export const ConnectorRenderer: React.FC<ConnectorRendererProps> = ({
   element,
   elementsMap,
   isSelected,
+  onPointerDown,
 }) => {
   const { start, end } = resolveConnectorPoints(element, elementsMap);
   const pathD = generateConnectorPath(start, end, element.lineStyle || 'straight');
@@ -563,6 +565,7 @@ export const ConnectorRenderer: React.FC<ConnectorRendererProps> = ({
         stroke="transparent"
         strokeWidth={Math.max(strokeWidth + 12, 16)}
         className="pointer-events-auto"
+        onPointerDown={onPointerDown}
       />
 
       {/* Main Visible Connector Path */}

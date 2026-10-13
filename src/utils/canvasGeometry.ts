@@ -199,3 +199,93 @@ export function doRectsIntersect(
 ): boolean {
   return !(r2.minX > r1.maxX || r2.maxX < r1.minX || r2.minY > r1.maxY || r2.maxY < r1.minY);
 }
+
+function distanceToSegment(point: Point, start: Point, end: Point): number {
+  const dx = end.x - start.x;
+  const dy = end.y - start.y;
+  const lengthSquared = dx * dx + dy * dy;
+  if (lengthSquared === 0) return Math.hypot(point.x - start.x, point.y - start.y);
+  const t = Math.max(0, Math.min(1, ((point.x - start.x) * dx + (point.y - start.y) * dy) / lengthSquared));
+  return Math.hypot(point.x - (start.x + t * dx), point.y - (start.y + t * dy));
+}
+
+/** Hit test canvas geometry in world coordinates. Tolerance should be scaled by zoom. */
+export function isPointNearCanvasElement(point: Point, element: CanvasElement, tolerance: number): boolean {
+  if (element.isHidden) return false;
+  const threshold = Math.max(0, tolerance) + Math.max(0, element.strokeWidth || 0) / 2;
+
+  if (element.type === 'line' || element.type === 'arrow') {
+    const { start, end } = resolveConnectorPoints(element, new Map());
+    let distance: number;
+    if (element.lineStyle === 'curved') {
+      const dx = end.x - start.x;
+      const dy = end.y - start.y;
+      let previous = start;
+      distance = Infinity;
+      for (let index = 1; index <= 24; index++) {
+        const t = index / 24;
+        const mt = 1 - t;
+        const current = {
+          x: mt ** 3 * start.x + 3 * mt ** 2 * t * (start.x + dx * 0.5) + 3 * mt * t ** 2 * (start.x + dx * 0.5) + t ** 3 * end.x,
+          y: mt ** 3 * start.y + 3 * mt ** 2 * t * start.y + 3 * mt * t ** 2 * end.y + t ** 3 * end.y,
+        };
+        distance = Math.min(distance, distanceToSegment(point, previous, current));
+        previous = current;
+      }
+    } else if (element.lineStyle === 'elbow') {
+      const midX = (start.x + end.x) / 2;
+      const bends = [{ x: midX, y: start.y }, { x: midX, y: end.y }];
+      const path = [start, ...bends, end];
+      distance = Math.min(...path.slice(1).map((pt, index) => distanceToSegment(point, path[index], pt)));
+    } else {
+      distance = distanceToSegment(point, start, end);
+    }
+    const arrowheadRadius = Math.max(8, (element.strokeWidth || 2) * 3);
+    if (element.type === 'arrow' && element.endArrow !== false) distance = Math.min(distance, Math.max(0, Math.hypot(point.x - end.x, point.y - end.y) - arrowheadRadius));
+    if (element.startArrow) distance = Math.min(distance, Math.max(0, Math.hypot(point.x - start.x, point.y - start.y) - arrowheadRadius));
+    return distance <= threshold;
+  }
+
+  if (element.type === 'draw' && element.points?.length) {
+    if (element.points.length === 1) {
+      return Math.hypot(point.x - element.points[0].x, point.y - element.points[0].y) <= threshold;
+    }
+    return element.points.slice(1).some((end, index) => distanceToSegment(point, element.points![index], end) <= threshold);
+  }
+
+  const center = { x: element.x + element.width / 2, y: element.y + element.height / 2 };
+  const angle = -(element.rotation || 0) * Math.PI / 180;
+  const dx = point.x - center.x;
+  const dy = point.y - center.y;
+  const localPoint = element.rotation
+    ? { x: center.x + dx * Math.cos(angle) - dy * Math.sin(angle), y: center.y + dx * Math.sin(angle) + dy * Math.cos(angle) }
+    : point;
+  return isPointInRect(localPoint, {
+    x: element.x - threshold,
+    y: element.y - threshold,
+    width: element.width + threshold * 2,
+    height: element.height + threshold * 2,
+  });
+}
+
+/** Translate or resize a connector's stored endpoints with its selection bounds. */
+export function transformConnectorPoints(
+  element: CanvasElement,
+  updates: Partial<CanvasElement>
+): Pick<CanvasElement, 'startPoint' | 'endPoint'> {
+  const start = element.startPoint || { x: element.x, y: element.y };
+  const end = element.endPoint || { x: element.x + element.width, y: element.y + element.height };
+  const minX = Math.min(start.x, end.x);
+  const minY = Math.min(start.y, end.y);
+  const oldWidth = Math.abs(end.x - start.x);
+  const oldHeight = Math.abs(end.y - start.y);
+  const nextX = updates.x ?? element.x;
+  const nextY = updates.y ?? element.y;
+  const isResize = updates.width !== undefined || updates.height !== undefined;
+  const scaleX = isResize && oldWidth > 0 ? (updates.width ?? element.width) / oldWidth : 1;
+  const scaleY = isResize && oldHeight > 0 ? (updates.height ?? element.height) / oldHeight : 1;
+  const mapPoint = (point: Point): Point => isResize
+    ? { x: nextX + (point.x - minX) * scaleX, y: nextY + (point.y - minY) * scaleY }
+    : { x: point.x + nextX - element.x, y: point.y + nextY - element.y };
+  return { startPoint: mapPoint(start), endPoint: mapPoint(end) };
+}

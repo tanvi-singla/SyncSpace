@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import * as Y from 'yjs';
 import { DocumentBlock, BlockType } from '../../types/documentTheme';
-import { getDocumentRoomName, getCanvasRoomName, parseRoomName } from '../../lib/yjs/rooms';
+import { getDocumentRoomName, getCanvasRoomName, isCanvasRoomRestored, parseRoomName } from '../../lib/yjs/rooms';
 import * as awarenessProtocol from 'y-protocols/awareness';
 
 describe('Document Yjs CRDT Logic & Room Isolation', () => {
@@ -53,6 +53,10 @@ describe('Document Yjs CRDT Logic & Room Isolation', () => {
   it('correctly formats and parses document, canvas, and directory room names', () => {
     expect(getDocumentRoomName('123')).toBe('syncspace:doc:123');
     expect(getCanvasRoomName('456')).toBe('syncspace:canvas:456');
+    const restoredRoom = getCanvasRoomName('456');
+    expect(isCanvasRoomRestored('456', restoredRoom)).toBe(true);
+    expect(isCanvasRoomRestored('789', restoredRoom)).toBe(false);
+    expect(isCanvasRoomRestored('456', null)).toBe(false);
 
     const parsedDoc = parseRoomName('syncspace:doc:abc-1');
     expect(parsedDoc.type).toBe('doc');

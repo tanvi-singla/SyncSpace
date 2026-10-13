@@ -30,7 +30,8 @@ import {
   calculateElementsBounds, 
   getClosestAnchorSide, 
   getShapeAnchorPoint,
-  doRectsIntersect 
+  doRectsIntersect,
+  isPointNearCanvasElement,
 } from '../../utils/canvasGeometry';
 
 type CanvasBoardProps = {
@@ -62,11 +63,13 @@ export function CanvasBoard({ workspaceState }: CanvasBoardProps) {
     viewport,
     setViewport,
     saveStatus,
+    isIndexedDbSynced,
     remoteUsers,
     broadcastCursor,
     addElement,
     updateElement,
     updateElements,
+    recordHistorySnapshot,
     deleteElements,
     duplicateElements,
     bringToFront,
@@ -116,6 +119,33 @@ export function CanvasBoard({ workspaceState }: CanvasBoardProps) {
   const isDraggingElementsRef = useRef(false);
   const dragStartPositionsRef = useRef<Record<string, { x: number; y: number }>>({});
   const dragPointerStartRef = useRef<Point>({ x: 0, y: 0 });
+  const pendingGeometryUpdatesRef = useRef<Record<string, Partial<CanvasElement>> | null>(null);
+  const geometryUpdateFrameRef = useRef<number | null>(null);
+
+  const scheduleGeometryUpdate = (updates: Record<string, Partial<CanvasElement>>) => {
+    pendingGeometryUpdatesRef.current = updates;
+    if (geometryUpdateFrameRef.current !== null) return;
+    geometryUpdateFrameRef.current = window.requestAnimationFrame(() => {
+      geometryUpdateFrameRef.current = null;
+      const pending = pendingGeometryUpdatesRef.current;
+      pendingGeometryUpdatesRef.current = null;
+      if (pending) updateElements(pending, false);
+    });
+  };
+
+  const flushGeometryUpdate = () => {
+    if (geometryUpdateFrameRef.current !== null) {
+      window.cancelAnimationFrame(geometryUpdateFrameRef.current);
+      geometryUpdateFrameRef.current = null;
+    }
+    const pending = pendingGeometryUpdatesRef.current;
+    pendingGeometryUpdatesRef.current = null;
+    if (pending) updateElements(pending, false);
+  };
+
+  useEffect(() => () => {
+    if (geometryUpdateFrameRef.current !== null) window.cancelAnimationFrame(geometryUpdateFrameRef.current);
+  }, []);
 
   // Resizing state
   const resizeHandleRef = useRef<{
@@ -150,6 +180,13 @@ export function CanvasBoard({ workspaceState }: CanvasBoardProps) {
     return map;
   }, [elements]);
 
+  const eraseAt = (point: Point) => {
+    const target = [...elements]
+      .sort((a, b) => (b.zIndex || 0) - (a.zIndex || 0))
+      .find((element) => isPointNearCanvasElement(point, element, 7 / viewport.zoom));
+    if (target) deleteElements([target.id]);
+  };
+
   const selectedElements = useMemo(() => {
     return elements.filter((el) => selectedIds.includes(el.id));
   }, [elements, selectedIds]);
@@ -166,6 +203,9 @@ export function CanvasBoard({ workspaceState }: CanvasBoardProps) {
   // ==========================================
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
+      // IndexedDB applies the saved Y.Doc asynchronously after mount. Keep all
+      // canvas shortcuts inactive until that restore is complete.
+      if (!isIndexedDbSynced) return;
       // Ignore shortcuts if user is typing in an input/textarea
       const targetTag = (e.target as HTMLElement)?.tagName?.toLowerCase();
       if (targetTag === 'input' || targetTag === 'textarea' || (e.target as HTMLElement)?.isContentEditable) {
@@ -311,6 +351,7 @@ export function CanvasBoard({ workspaceState }: CanvasBoardProps) {
     deleteElements,
     setSelectedIds,
     setActiveTool,
+    isIndexedDbSynced,
   ]);
 
   // ==========================================
@@ -318,12 +359,22 @@ export function CanvasBoard({ workspaceState }: CanvasBoardProps) {
   // ==========================================
 
   const handlePointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
+    if (!isIndexedDbSynced) return;
     // Right click -> Open context menu
     if (e.button === 2) {
       return;
     }
 
+    const target = e.target as HTMLElement;
+    if (target !== containerRef.current && !target.closest('#canvas-world-plane')) return;
+
     setContextMenuPos(null);
+
+    if (activeTool === 'eraser') {
+      eraseAt(screenToWorld(e.clientX, e.clientY));
+      if (containerRef.current) containerRef.current.setPointerCapture(e.pointerId);
+      return;
+    }
 
     // Pan canvas with middle click, Space+click, or Pan tool
     if (e.button === 1 || isSpacePressedRef.current || activeTool === 'pan') {
@@ -442,8 +493,14 @@ export function CanvasBoard({ workspaceState }: CanvasBoardProps) {
   };
 
   const handlePointerMove = (e: React.PointerEvent<HTMLDivElement>) => {
+    if (!isIndexedDbSynced) return;
     const worldPos = screenToWorld(e.clientX, e.clientY);
     broadcastCursor(worldPos, activeTool);
+
+    if (activeTool === 'eraser' && (e.buttons & 1) === 1) {
+      eraseAt(worldPos);
+      return;
+    }
 
     // 1. Panning Canvas
     if (isPanning) {
@@ -487,12 +544,12 @@ export function CanvasBoard({ workspaceState }: CanvasBoardProps) {
 
       // If single element, update its geometry directly
       if (selectedElements.length === 1) {
-        updateElement(selectedElements[0].id, {
+        scheduleGeometryUpdate({ [selectedElements[0].id]: {
           x: Math.round(newX),
           y: Math.round(newY),
           width: Math.round(newW),
           height: Math.round(newH),
-        }, false);
+        } });
       } else {
         // Multi-element scaling proportional
         const scaleX = newW / startBounds.width;
@@ -508,7 +565,7 @@ export function CanvasBoard({ workspaceState }: CanvasBoardProps) {
             height: Math.round(el.height * scaleY),
           };
         });
-        updateElements(updates, false);
+        scheduleGeometryUpdate(updates);
       }
       return;
     }
@@ -528,7 +585,7 @@ export function CanvasBoard({ workspaceState }: CanvasBoardProps) {
           };
         }
       });
-      updateElements(updates, false);
+      scheduleGeometryUpdate(updates);
       return;
     }
 
@@ -566,6 +623,8 @@ export function CanvasBoard({ workspaceState }: CanvasBoardProps) {
   };
 
   const handlePointerUp = (e: React.PointerEvent<HTMLDivElement>) => {
+    if (!isIndexedDbSynced) return;
+    flushGeometryUpdate();
     try {
       if (containerRef.current?.hasPointerCapture(e.pointerId)) {
         containerRef.current.releasePointerCapture(e.pointerId);
@@ -689,8 +748,27 @@ export function CanvasBoard({ workspaceState }: CanvasBoardProps) {
     }
   };
 
+  const handlePointerCancel = (e: React.PointerEvent<HTMLDivElement>) => {
+    if (geometryUpdateFrameRef.current !== null) window.cancelAnimationFrame(geometryUpdateFrameRef.current);
+    geometryUpdateFrameRef.current = null;
+    pendingGeometryUpdatesRef.current = null;
+    try {
+      if (containerRef.current?.hasPointerCapture(e.pointerId)) {
+        containerRef.current.releasePointerCapture(e.pointerId);
+      }
+    } catch {}
+    setIsPanning(false);
+    setIsDrafting(false);
+    draftShapeRef.current = null;
+    isDraggingElementsRef.current = false;
+    dragStartPositionsRef.current = {};
+    resizeHandleRef.current = null;
+    setMarqueeBox(null);
+  };
+
   // Wheel Zoom & Pan
   const handleWheel = (e: React.WheelEvent) => {
+    if (!isIndexedDbSynced) return;
     e.preventDefault();
     if (e.ctrlKey || e.metaKey) {
       // Zoom
@@ -717,14 +795,10 @@ export function CanvasBoard({ workspaceState }: CanvasBoardProps) {
 
   // Element Selection & Drag Initiation
   const handleElementPointerDown = (id: string, e: React.PointerEvent) => {
-    if (activeTool === 'eraser') {
-      deleteElements([id]);
-      return;
-    }
-
     if (activeTool !== 'select') return;
 
     e.stopPropagation();
+    if (editingElementId === id) return;
     const isMultiKey = e.shiftKey || e.ctrlKey || e.metaKey;
 
     let nextSelectedIds = [...selectedIds];
@@ -766,6 +840,10 @@ export function CanvasBoard({ workspaceState }: CanvasBoardProps) {
   const handleResizeStart = (handle: string, e: React.PointerEvent) => {
     e.stopPropagation();
     if (!selectedBounds) return;
+
+    // Geometry changes during the gesture are streamed without history writes;
+    // capture the pre-gesture state once so a single Undo restores the resize.
+    recordHistorySnapshot();
 
     const worldPos = screenToWorld(e.clientX, e.clientY);
     resizeHandleRef.current = {
@@ -954,8 +1032,8 @@ export function CanvasBoard({ workspaceState }: CanvasBoardProps) {
         onExportPNG={handleExportPNG}
         onExportSVG={handleExportSVG}
         onExportJSON={() => exportAsJSON(docTitle)}
-        onImportJSON={() => fileImportInputRef.current?.click()}
-        onClearCanvas={clearCanvas}
+        onImportJSON={() => isIndexedDbSynced && fileImportInputRef.current?.click()}
+        onClearCanvas={() => { if (isIndexedDbSynced) clearCanvas(); }}
         onResetZoom={() => setViewport({ ...viewport, zoom: 1 })}
         onFitToScreen={() => {
           const bounds = calculateElementsBounds(elements);
@@ -987,6 +1065,7 @@ export function CanvasBoard({ workspaceState }: CanvasBoardProps) {
         onPointerDown={handlePointerDown}
         onPointerMove={handlePointerMove}
         onPointerUp={handlePointerUp}
+        onPointerCancel={handlePointerCancel}
         onWheel={handleWheel}
         onContextMenu={(e) => handleContextMenu(e)}
         className={`flex-1 relative w-full h-full overflow-hidden ${
@@ -1054,6 +1133,7 @@ export function CanvasBoard({ workspaceState }: CanvasBoardProps) {
                   element={el}
                   elementsMap={elementsMap}
                   isSelected={selectedIds.includes(el.id)}
+                  onPointerDown={(event) => handleElementPointerDown(el.id, event)}
                 />
               );
             })}
@@ -1251,6 +1331,18 @@ export function CanvasBoard({ workspaceState }: CanvasBoardProps) {
           onGroup={() => groupElements(selectedIds)}
           onUngroup={() => ungroupElements(selectedIds)}
         />
+
+        {!isIndexedDbSynced && (
+          <div
+            role="status"
+            aria-live="polite"
+            className="absolute inset-0 z-[60] flex items-center justify-center bg-workspace-50/80 backdrop-blur-[1px]"
+          >
+            <div className="rounded-xl border border-workspace-200 bg-white px-4 py-3 text-sm text-workspace-600 shadow-panel">
+              Restoring saved canvas…
+            </div>
+          </div>
+        )}
       </div>
 
       {/* Keyboard Shortcuts Modal */}
