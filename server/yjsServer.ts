@@ -253,7 +253,7 @@ export function createYjsServer(): {
   server.on('upgrade', async (req, socket, head) => {
     try {
       const url = new URL(req.url || '/', `http://${req.headers.host || 'localhost'}`);
-      const rawRoomName = url.pathname.slice(1).split('?')[0];
+      const rawRoomName = decodeURIComponent(url.pathname.slice(1).split('?')[0]);
 
       if (!rawRoomName) {
         socket.write('HTTP/1.1 400 Bad Request\r\n\r\nRoom name required');

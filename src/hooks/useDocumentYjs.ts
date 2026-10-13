@@ -147,14 +147,21 @@ export function useDocumentYjs({
     let hasInitialized = false;
 
     // Checks if the document is genuinely empty and initializes starter paragraph once
-    const checkAndInitDefaultBlocks = () => {
-      if (hasInitialized) return;
+    const checkAndInitDefaultBlocks = (isWsSynced = false) => {
       const currentArray = blocksArrayRef.current;
       const currentDoc = ydocRef.current;
       if (!currentArray || !currentDoc) return;
 
       if (currentArray.length === 0) {
+        // If connecting to WebSocket, wait until WebSocket is synced before inserting default block
+        // to prevent race conditions with remote server content.
+        if (wsProvider && !isWsSynced && wsProvider.wsconnected) {
+          return;
+        }
+
+        if (hasInitialized) return;
         hasInitialized = true;
+
         currentDoc.transact(() => {
           if (currentArray.length === 0) {
             currentArray.push([
@@ -171,18 +178,25 @@ export function useDocumentYjs({
         hasInitialized = true;
         // If concurrent initializations occurred, deduplicate initial empty b1 blocks
         if (currentArray.length > 1) {
-          const b1Indices: number[] = [];
+          const b1EmptyIndices: number[] = [];
           for (let i = 0; i < currentArray.length; i++) {
             const item = currentArray.get(i);
             const block = yItemToBlock(item);
             if (block.id === 'b1' && block.content === '') {
-              b1Indices.push(i);
+              b1EmptyIndices.push(i);
             }
           }
-          if (b1Indices.length > 1) {
+          if (b1EmptyIndices.length > 0 && currentArray.length > b1EmptyIndices.length) {
+            // Remove empty initial b1 blocks if user content exists
             currentDoc.transact(() => {
-              for (let i = b1Indices.length - 1; i > 0; i--) {
-                currentArray.delete(b1Indices[i], 1);
+              for (let i = b1EmptyIndices.length - 1; i >= 0; i--) {
+                currentArray.delete(b1EmptyIndices[i], 1);
+              }
+            });
+          } else if (b1EmptyIndices.length > 1) {
+            currentDoc.transact(() => {
+              for (let i = b1EmptyIndices.length - 1; i > 0; i--) {
+                currentArray.delete(b1EmptyIndices[i], 1);
               }
             });
           }
@@ -196,7 +210,7 @@ export function useDocumentYjs({
 
     idbProvider.on('synced', () => {
       setIsIndexedDbSynced(true);
-      checkAndInitDefaultBlocks();
+      checkAndInitDefaultBlocks(false);
       syncBlocksFromYjs();
     });
 
@@ -211,18 +225,28 @@ export function useDocumentYjs({
       providerRef.current = wsProvider;
 
       wsProvider.on('status', (event: { status: ConnectionStatus }) => {
+        console.log(`[useDocumentYjs] Connection status: ${event.status} (${docName})`);
         setConnectionStatus(event.status);
+        if (event.status === 'disconnected') {
+          // If offline and IndexedDB is empty, safely initialize starter block
+          checkAndInitDefaultBlocks(false);
+          syncBlocksFromYjs();
+        }
       });
 
       wsProvider.on('sync', (isSynced: boolean) => {
         if (isSynced) {
-          checkAndInitDefaultBlocks();
+          console.log(`[useDocumentYjs] Synced with relay server for room: ${docName}`);
+          checkAndInitDefaultBlocks(true);
           syncBlocksFromYjs();
         }
       });
 
       wsProvider.on('connection-error', () => {
+        console.warn(`[useDocumentYjs] Connection error for room: ${docName}`);
         setConnectionStatus('disconnected');
+        checkAndInitDefaultBlocks(false);
+        syncBlocksFromYjs();
       });
 
       // Awareness for collaborative presence

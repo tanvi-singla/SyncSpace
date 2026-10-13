@@ -44,7 +44,7 @@ export type ParsedRoom = {
  * Parses any incoming room name (including legacy formats) to extract document ID and type.
  */
 export function parseRoomName(roomName: string): ParsedRoom {
-  const clean = (roomName || '').trim().replace(/^\/+/, '');
+  const clean = decodeURIComponent((roomName || '').trim().replace(/^\/+/, ''));
 
   if (clean === ROOM_DIRECTORY) {
     return { type: 'directory', rawRoomName: clean };

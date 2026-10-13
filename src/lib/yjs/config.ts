@@ -21,10 +21,10 @@ export function getWsUrl(): string {
     const hostname = window.location.hostname;
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
     if (hostname !== 'localhost' && hostname !== '127.0.0.1') {
-      return `${protocol}//${hostname}:1234`;
+      return `${protocol}//${hostname}:5000`;
     }
   }
 
   // 3. Default local development fallback
-  return 'ws://localhost:1234';
+  return 'ws://localhost:5000';
 }
