@@ -1,4 +1,5 @@
 import React, { useState, useRef, useEffect, useCallback, useMemo } from 'react';
+import { useParams } from 'react-router-dom';
 import { useWorkspace } from '../../hooks/useWorkspace';
 import { useAuth } from '../../auth/AuthContext';
 import { 
@@ -40,16 +41,18 @@ type CanvasBoardProps = {
 
 export function CanvasBoard({ workspaceState }: CanvasBoardProps) {
   const { currentDocId, documents, updateDocumentTitle } = workspaceState;
+  const { id: routeDocId } = useParams<{ id: string }>();
   const { user } = useAuth();
 
-  const currentDocMeta = currentDocId ? documents[currentDocId] : undefined;
+  const activeDocId = currentDocId || routeDocId || 'main';
+  const currentDocMeta = activeDocId ? documents[activeDocId] : undefined;
   const isOwner = !currentDocMeta?.isShared && (!currentDocMeta?.permission || currentDocMeta?.permission === 'OWNER');
   const docTitle = currentDocMeta ? currentDocMeta.title : 'Architecture Whiteboard';
 
   // Canvas State Engine
 
   const engine = useCanvasEngine({
-    roomId: currentDocId || 'main',
+    roomId: activeDocId,
     currentUserName: user?.name || 'Tanvi',
     currentUserColor: '#00667E',
   });
@@ -1021,7 +1024,7 @@ export function CanvasBoard({ workspaceState }: CanvasBoardProps) {
       {/* Top Navigation Bar */}
       <CanvasTopBar
         title={docTitle}
-        onUpdateTitle={(newTitle) => currentDocId && updateDocumentTitle(currentDocId, newTitle)}
+        onUpdateTitle={(newTitle) => activeDocId && activeDocId !== 'main' && updateDocumentTitle(activeDocId, newTitle)}
         saveStatus={saveStatus}
         canUndo={canUndo}
         canRedo={canRedo}
@@ -1052,7 +1055,7 @@ export function CanvasBoard({ workspaceState }: CanvasBoardProps) {
         showGrid={showGrid}
         onToggleGrid={() => setShowGrid(!showGrid)}
         onOpenHelpModal={() => setIsHelpOpen(true)}
-        documentId={currentDocId || undefined}
+        documentId={activeDocId !== 'main' ? activeDocId : undefined}
         isOwner={isOwner}
         permission={currentDocMeta?.permission || (isOwner ? 'OWNER' : undefined)}
       />

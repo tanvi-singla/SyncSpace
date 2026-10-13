@@ -23,6 +23,7 @@ import {
 } from '../../utils/canvasGeometry';
 import { getWsUrl } from '../../lib/yjs/config';
 import { getCanvasRoomName, isCanvasRoomRestored } from '../../lib/yjs/rooms';
+import { getWsTokenApi } from '../../lib/api/auth';
 
 interface UseCanvasEngineOptions {
   roomId: string;
@@ -50,7 +51,7 @@ export function useCanvasEngine({
   
   // Connection & Sync state
   const [connectionStatus, setConnectionStatus] = useState<ConnectionStatus>('connecting');
-  const [saveStatus, setSaveStatus] = useState<'saved' | 'saving' | 'synced'>('synced');
+  const [saveStatus, setSaveStatus] = useState<'saved' | 'saving' | 'synced'>('saving');
   const [indexedDbSyncedRoom, setIndexedDbSyncedRoom] = useState<string | null>(null);
   const [remoteUsers, setRemoteUsers] = useState<UserPresence[]>([]);
 
@@ -73,7 +74,7 @@ export function useCanvasEngine({
   const markSavedSoon = useCallback(() => {
     if (saveStatusTimerRef.current) clearTimeout(saveStatusTimerRef.current);
     saveStatusTimerRef.current = setTimeout(() => {
-      setSaveStatus('synced');
+      setSaveStatus(providerRef.current?.wsconnected ? 'synced' : 'saved');
       saveStatusTimerRef.current = null;
     }, 300);
   }, []);
@@ -148,7 +149,7 @@ export function useCanvasEngine({
     const handleIndexedDbSynced = () => {
       indexedDbReady = true;
       setIndexedDbSyncedRoom(docName);
-      setSaveStatus('synced');
+      setSaveStatus(websocketStatus === 'connected' ? 'synced' : 'saved');
       seedInitialContentIfNeeded();
       syncElementsFromYjs();
     };
@@ -160,30 +161,59 @@ export function useCanvasEngine({
     elementsMap.observe(handleElementsChange);
 
     // 2. WebSocket Multiplayer
+    let isDisposed = false;
     let wsProvider: WebsocketProvider | null = null;
     let cleanupAwareness: (() => void) | undefined;
+
+    // Sanitize target host for safe diagnostic logging (never log tokens or contents)
+    const safeHost = (() => {
+      try {
+        return new URL(resolvedWsUrl.replace(/^ws/, 'http')).host;
+      } catch {
+        return 'unknown';
+      }
+    })();
+
+    console.log(`[useCanvasEngine] Initializing connection to room: ${docName} (target host: ${safeHost})`);
+
     try {
-      wsProvider = new WebsocketProvider(resolvedWsUrl, docName, doc, { connect: true });
+      wsProvider = new WebsocketProvider(resolvedWsUrl, docName, doc, { connect: false });
       providerRef.current = wsProvider;
 
       wsProvider.on('status', (event: { status: 'connected' | 'connecting' | 'disconnected' }) => {
+        console.log(`[useCanvasEngine] Connection status changed to: ${event.status} (room: ${docName}, host: ${safeHost})`);
         websocketStatus = event.status;
         setConnectionStatus(event.status);
-        if (event.status === 'connected') setSaveStatus('synced');
-        else if (event.status === 'connecting') setSaveStatus('saving');
-        else {
+        if (event.status === 'connected') {
+          setSaveStatus('synced');
+        } else if (event.status === 'connecting') {
+          setSaveStatus('saving');
+        } else {
           setSaveStatus('saved');
           seedInitialContentIfNeeded();
         }
       });
 
       wsProvider.on('sync', (isSynced: boolean) => {
-        websocketSynced = isSynced;
-        if (isSynced) seedInitialContentIfNeeded();
+        if (isSynced) {
+          console.log(`[useCanvasEngine] Synced with relay server for room: ${docName} (host: ${safeHost})`);
+          websocketSynced = true;
+          websocketStatus = 'connected';
+          setConnectionStatus('connected');
+          setSaveStatus('synced');
+          seedInitialContentIfNeeded();
+          syncElementsFromYjs();
+        }
       });
 
-      wsProvider.on('connection-error', () => {
-        // The provider retries with backoff; IndexedDB remains fully usable.
+      wsProvider.on('connection-error', (err: any) => {
+        const safeErrorMessage =
+          err && typeof err.message === 'string'
+            ? err.message
+            : err && typeof err.type === 'string'
+            ? err.type
+            : 'WebSocket connection handshake failure';
+        console.warn(`[useCanvasEngine] Connection error for room: ${docName} (host: ${safeHost}): ${safeErrorMessage}`);
         websocketStatus = 'disconnected';
         setConnectionStatus('disconnected');
         setSaveStatus('saved');
@@ -225,26 +255,45 @@ export function useCanvasEngine({
 
       cleanupAwareness = () => {
         awareness.off('change', handleAwarenessChange);
+        awareness.setLocalState(null);
       };
+
+      // Retrieve backend-minted WebSocket token for cross-origin or deployed authentication
+      getWsTokenApi()
+        .then((token) => {
+          if (isDisposed || !wsProvider) return;
+          if (token) {
+            wsProvider.params = { token };
+          }
+          wsProvider.connect();
+        })
+        .catch((err) => {
+          if (isDisposed || !wsProvider) return;
+          const msg = err instanceof Error ? err.message : 'token retrieval failure';
+          console.warn(`[useCanvasEngine] Connecting with cookie fallback (${msg})`);
+          wsProvider.connect();
+        });
     } catch (e) {
-      console.warn('WebSocket connection fallback to local-only IndexedDB mode:', e);
+      const initError = e instanceof Error ? e.message : 'Unknown initialization failure';
+      console.warn(`[useCanvasEngine] WebSocket initialization fallback to local-only IndexedDB mode: ${initError}`);
       websocketStatus = 'disconnected';
       setConnectionStatus('disconnected');
+      setSaveStatus('saved');
       seedInitialContentIfNeeded();
     }
 
     syncElementsFromYjs();
 
     return () => {
+      isDisposed = true;
       if (saveStatusTimerRef.current) clearTimeout(saveStatusTimerRef.current);
       saveStatusTimerRef.current = null;
       elementsMap.unobserve(handleElementsChange);
       idbProvider.off('synced', handleIndexedDbSynced);
       cleanupAwareness?.();
       if (wsProvider) {
-        wsProvider.awareness.setLocalState(null);
+        wsProvider.destroy();
       }
-      if (wsProvider) wsProvider.destroy();
       idbProvider.destroy();
       doc.destroy();
       ydocRef.current = null;
@@ -252,7 +301,7 @@ export function useCanvasEngine({
       idbRef.current = null;
       elementsMapRef.current = null;
     };
-  }, [roomId, wsUrl, currentUserName, currentUserColor]);
+  }, [roomId, resolvedWsUrl, currentUserName, currentUserColor]);
 
   // Broadcast cursor to peers
   const broadcastCursor = useCallback((cursor: Point | null, tool?: ActiveTool) => {
