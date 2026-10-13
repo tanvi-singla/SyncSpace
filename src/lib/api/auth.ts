@@ -111,3 +111,50 @@ export async function resetPasswordApi(data: ResetPasswordInput): Promise<{ mess
   });
   return handleResponse<{ message: string }>(res);
 }
+
+/**
+ * Resolves the base URL for API requests, supporting custom base URLs if configured.
+ */
+export function getApiBaseUrl(): string {
+  const envApi =
+    (typeof process !== 'undefined' && process.env?.VITE_API_URL !== undefined
+      ? process.env.VITE_API_URL
+      : (import.meta as any).env?.VITE_API_URL) ||
+    (typeof process !== 'undefined' && process.env?.VITE_SERVER_URL !== undefined
+      ? process.env.VITE_SERVER_URL
+      : (import.meta as any).env?.VITE_SERVER_URL) ||
+    (typeof process !== 'undefined' && process.env?.VITE_API_BASE_URL !== undefined
+      ? process.env.VITE_API_BASE_URL
+      : (import.meta as any).env?.VITE_API_BASE_URL);
+
+  if (envApi && typeof envApi === 'string' && envApi.trim().length > 0) {
+    return envApi.trim().replace(/\/+$/, '');
+  }
+  return '';
+}
+
+/**
+ * Fetches a short-lived signed WebSocket token from the trusted backend.
+ * Uses session credentials (cookies) to authorize the request.
+ * Returns null if unauthenticated or on network failure. Never logs token contents.
+ */
+export async function getWsTokenApi(): Promise<string | null> {
+  try {
+    const baseUrl = getApiBaseUrl();
+    const res = await fetch(`${baseUrl}/api/auth/ws-token`, {
+      method: 'GET',
+      credentials: 'include',
+    });
+    if (!res.ok) {
+      return null;
+    }
+    const data = await res.json();
+    if (data && typeof data.token === 'string' && data.token.trim().length > 0) {
+      return data.token.trim();
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+

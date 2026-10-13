@@ -5,6 +5,7 @@ import { WebsocketProvider } from 'y-websocket';
 import { DocumentBlock, BlockType } from '../types/documentTheme';
 import { getWsUrl } from '../lib/yjs/config';
 import { getDocumentRoomName } from '../lib/yjs/rooms';
+import { getWsTokenApi } from '../lib/api/auth';
 
 export type ConnectionStatus = 'connected' | 'connecting' | 'disconnected';
 
@@ -215,17 +216,29 @@ export function useDocumentYjs({
     });
 
     // 2. Real-time WebSocket synchronization across tabs and users
+    let isDisposed = false;
     let wsProvider: WebsocketProvider | null = null;
     let cleanupAwareness: (() => void) | undefined;
 
+    // Sanitize target host for safe diagnostic logging (never log tokens or contents)
+    const safeHost = (() => {
+      try {
+        return new URL(resolvedWsUrl.replace(/^ws/, 'http')).host;
+      } catch {
+        return 'unknown';
+      }
+    })();
+
+    console.log(`[useDocumentYjs] Initializing connection to room: ${docName} (target host: ${safeHost})`);
+
     try {
       wsProvider = new WebsocketProvider(resolvedWsUrl, docName, doc, {
-        connect: true,
+        connect: false,
       });
       providerRef.current = wsProvider;
 
       wsProvider.on('status', (event: { status: ConnectionStatus }) => {
-        console.log(`[useDocumentYjs] Connection status: ${event.status} (${docName})`);
+        console.log(`[useDocumentYjs] Connection status changed to: ${event.status} (room: ${docName}, host: ${safeHost})`);
         setConnectionStatus(event.status);
         if (event.status === 'disconnected') {
           // If offline and IndexedDB is empty, safely initialize starter block
@@ -236,14 +249,20 @@ export function useDocumentYjs({
 
       wsProvider.on('sync', (isSynced: boolean) => {
         if (isSynced) {
-          console.log(`[useDocumentYjs] Synced with relay server for room: ${docName}`);
+          console.log(`[useDocumentYjs] Synced with relay server for room: ${docName} (host: ${safeHost})`);
           checkAndInitDefaultBlocks(true);
           syncBlocksFromYjs();
         }
       });
 
-      wsProvider.on('connection-error', () => {
-        console.warn(`[useDocumentYjs] Connection error for room: ${docName}`);
+      wsProvider.on('connection-error', (err: any) => {
+        const safeErrorMessage =
+          err && typeof err.message === 'string'
+            ? err.message
+            : err && typeof err.type === 'string'
+            ? err.type
+            : 'WebSocket connection handshake failure';
+        console.warn(`[useDocumentYjs] Connection error for room: ${docName} (host: ${safeHost}): ${safeErrorMessage}`);
         setConnectionStatus('disconnected');
         checkAndInitDefaultBlocks(false);
         syncBlocksFromYjs();
@@ -287,10 +306,26 @@ export function useDocumentYjs({
         awareness.off('change', handleAwarenessChange);
         awareness.setLocalState(null);
       };
+
+      // Retrieve backend-minted WebSocket token for cross-origin or deployed authentication
+      getWsTokenApi()
+        .then((token) => {
+          if (isDisposed || !wsProvider) return;
+          if (token) {
+            wsProvider.params = { token };
+          }
+          wsProvider.connect();
+        })
+        .catch((err) => {
+          if (isDisposed || !wsProvider) return;
+          const msg = err instanceof Error ? err.message : 'token retrieval failure';
+          console.warn(`[useDocumentYjs] Connecting with cookie fallback (${msg})`);
+          wsProvider.connect();
+        });
     } catch (e) {
+      const initError = e instanceof Error ? e.message : 'Unknown initialization failure';
       console.warn(
-        `[useDocumentYjs] WebSocket initialization fallback to offline IndexedDB for ${docName}:`,
-        e
+        `[useDocumentYjs] WebSocket initialization fallback to offline IndexedDB for ${docName}: ${initError}`
       );
       setConnectionStatus('disconnected');
     }
@@ -307,6 +342,7 @@ export function useDocumentYjs({
 
     // 4. Cleanup on document change or unmount
     return () => {
+      isDisposed = true;
       blocksArray.unobserveDeep(handleArrayChange);
       cleanupAwareness?.();
       if (wsProvider) {

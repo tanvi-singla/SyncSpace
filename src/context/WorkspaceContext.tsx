@@ -13,6 +13,7 @@ import {
   getDocumentApi,
 } from '../lib/api/documents';
 import { getWsUrl } from '../lib/yjs/config';
+import { getWsTokenApi } from '../lib/api/auth';
 
 export type CanvasItem = { id: string; type: string; x: number; y: number; w?: number; h?: number; r?: number; text?: string; color?: string };
 
@@ -80,9 +81,10 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
     idbProvider.on('synced', handleIndexedDbSynced);
     localFilesMap.observe(syncLocalFiles);
 
+    let isDisposed = false;
     let cleanupAwareness: (() => void) | undefined;
     try {
-      wsProvider = new WebsocketProvider(getWsUrl(), 'workspace-directory', doc, { connect: true });
+      wsProvider = new WebsocketProvider(getWsUrl(), 'workspace-directory', doc, { connect: false });
       providerRef.current = wsProvider;
       wsProvider.on('status', (event: { status: 'connected' | 'connecting' | 'disconnected' }) => {
         setSaveStatus(event.status === 'connected' ? 'synced' : event.status === 'connecting' ? 'syncing' : 'offline');
@@ -97,12 +99,24 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
       };
       awareness.on('change', handleAwarenessChange);
       cleanupAwareness = () => { awareness.off('change', handleAwarenessChange); awareness.setLocalState(null); };
+
+      getWsTokenApi()
+        .then((token) => {
+          if (isDisposed || !wsProvider) return;
+          if (token) wsProvider.params = { token };
+          wsProvider.connect();
+        })
+        .catch(() => {
+          if (isDisposed || !wsProvider) return;
+          wsProvider.connect();
+        });
     } catch (error) {
       console.warn('WebSocket connection fallback to local-only IndexedDB mode:', error);
       setSaveStatus('offline');
     }
 
     return () => {
+      isDisposed = true;
       localFilesMap.unobserve(syncLocalFiles);
       idbProvider.off('synced', handleIndexedDbSynced);
       cleanupAwareness?.();

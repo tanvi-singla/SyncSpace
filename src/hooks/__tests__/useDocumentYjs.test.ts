@@ -1,7 +1,9 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import * as Y from 'yjs';
 import { DocumentBlock, BlockType } from '../../types/documentTheme';
 import { getDocumentRoomName, getCanvasRoomName, isCanvasRoomRestored, parseRoomName } from '../../lib/yjs/rooms';
+import { getWsUrl } from '../../lib/yjs/config';
+import { getWsTokenApi, getApiBaseUrl } from '../../lib/api/auth';
 import * as awarenessProtocol from 'y-protocols/awareness';
 
 describe('Document Yjs CRDT Logic & Room Isolation', () => {
@@ -473,3 +475,100 @@ describe('Document Yjs CRDT Logic & Room Isolation', () => {
     doc.destroy();
   });
 });
+
+describe('WebSocket URL Resolution (getWsUrl)', () => {
+  const origWs = process.env.VITE_WS_URL;
+  const origYjsWs = process.env.VITE_YJS_WS_URL;
+
+  afterEach(() => {
+    if (origWs !== undefined) process.env.VITE_WS_URL = origWs;
+    else delete process.env.VITE_WS_URL;
+    if (origYjsWs !== undefined) process.env.VITE_YJS_WS_URL = origYjsWs;
+    else delete process.env.VITE_YJS_WS_URL;
+  });
+
+  it('respects explicitly configured VITE_WS_URL, including Render, and never silently replaces it with localhost', () => {
+    process.env.VITE_WS_URL = 'wss://syncspace-yjs-relay.onrender.com';
+    const url = getWsUrl();
+    expect(url).toBe('wss://syncspace-yjs-relay.onrender.com');
+  });
+
+  it('strips trailing slashes from the configured URL', () => {
+    process.env.VITE_WS_URL = 'wss://syncspace-yjs-relay.onrender.com///';
+    const url = getWsUrl();
+    expect(url).toBe('wss://syncspace-yjs-relay.onrender.com');
+  });
+
+  it('supports VITE_YJS_WS_URL as alternative environment variable', () => {
+    process.env.VITE_WS_URL = '';
+    process.env.VITE_YJS_WS_URL = 'wss://custom-relay.example.com';
+    const url = getWsUrl();
+    expect(url).toBe('wss://custom-relay.example.com');
+  });
+
+  it('falls back to ws://localhost:5000 when environment variables are omitted or blank', () => {
+    process.env.VITE_WS_URL = '';
+    process.env.VITE_YJS_WS_URL = '';
+    const url = getWsUrl();
+    expect(url).toBe('ws://localhost:5000');
+  });
+});
+
+describe('WebSocket Token Handling (getWsTokenApi & getApiBaseUrl)', () => {
+  const originalFetch = globalThis.fetch;
+  const origApi = process.env.VITE_API_URL;
+
+  afterEach(() => {
+    globalThis.fetch = originalFetch;
+    if (origApi !== undefined) process.env.VITE_API_URL = origApi;
+    else delete process.env.VITE_API_URL;
+  });
+
+  it('resolves default empty base URL and strips trailing slashes if configured', () => {
+    process.env.VITE_API_URL = '';
+    expect(getApiBaseUrl()).toBe('');
+    process.env.VITE_API_URL = 'https://api.syncspace.dev//';
+    expect(getApiBaseUrl()).toBe('https://api.syncspace.dev');
+  });
+
+  it('fetches short-lived token from /api/auth/ws-token with credentials include', async () => {
+    let capturedUrl = '';
+    let capturedCredentials = '';
+
+    globalThis.fetch = vi.fn().mockImplementation((url, opts) => {
+      capturedUrl = url;
+      capturedCredentials = opts?.credentials;
+      return Promise.resolve({
+        ok: true,
+        json: () => Promise.resolve({ token: 'mock-jwt-token-xyz', userId: 'user-123' }),
+      } as Response);
+    });
+
+    const token = await getWsTokenApi();
+    expect(token).toBe('mock-jwt-token-xyz');
+    expect(capturedUrl).toBe('/api/auth/ws-token');
+    expect(capturedCredentials).toBe('include');
+  });
+
+  it('gracefully returns null when unauthenticated (401)', async () => {
+    globalThis.fetch = vi.fn().mockImplementation(() => {
+      return Promise.resolve({
+        ok: false,
+        status: 401,
+      } as Response);
+    });
+
+    const token = await getWsTokenApi();
+    expect(token).toBeNull();
+  });
+
+  it('gracefully returns null on network error without throwing unhandled rejection', async () => {
+    globalThis.fetch = vi.fn().mockImplementation(() => {
+      return Promise.reject(new Error('Network connection failed'));
+    });
+
+    const token = await getWsTokenApi();
+    expect(token).toBeNull();
+  });
+});
+
