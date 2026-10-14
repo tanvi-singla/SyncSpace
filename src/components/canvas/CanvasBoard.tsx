@@ -17,6 +17,7 @@ import { CanvasLayersPanel } from './CanvasLayersPanel';
 import { CanvasContextMenu } from './CanvasContextMenu';
 import { CanvasMinimap } from './CanvasMinimap';
 import { CanvasShortcutsModal } from './CanvasShortcutsModal';
+import { CanvasDetailsPanel } from './CanvasDetailsPanel';
 import { 
   ShapeRenderer, 
   StickyNoteRenderer, 
@@ -94,6 +95,7 @@ export function CanvasBoard({ workspaceState }: CanvasBoardProps) {
 
   // UI state
   const [isLayersOpen, setIsLayersOpen] = useState(false);
+  const [isCanvasDetailsOpen, setIsCanvasDetailsOpen] = useState(false);
   const [showGrid, setShowGrid] = useState(true);
   const [isHelpOpen, setIsHelpOpen] = useState(false);
   const [editingElementId, setEditingElementId] = useState<string | null>(null);
@@ -1058,10 +1060,13 @@ export function CanvasBoard({ workspaceState }: CanvasBoardProps) {
         documentId={activeDocId !== 'main' ? activeDocId : undefined}
         isOwner={isOwner}
         permission={currentDocMeta?.permission || (isOwner ? 'OWNER' : undefined)}
+        isSidebarOpen={isCanvasDetailsOpen}
+        onToggleSidebar={() => setIsCanvasDetailsOpen((open) => !open)}
       />
 
 
       {/* Main Canvas Surface */}
+      <div className="flex-1 min-h-0 flex relative">
       <div
         ref={containerRef}
         id="canvas-viewport"
@@ -1071,7 +1076,7 @@ export function CanvasBoard({ workspaceState }: CanvasBoardProps) {
         onPointerCancel={handlePointerCancel}
         onWheel={handleWheel}
         onContextMenu={(e) => handleContextMenu(e)}
-        className={`flex-1 relative w-full h-full overflow-hidden ${
+        className={`flex-1 min-w-0 relative w-full h-full overflow-hidden ${
           isPanning
             ? 'cursor-grabbing'
             : activeTool === 'pan'
@@ -1346,6 +1351,34 @@ export function CanvasBoard({ workspaceState }: CanvasBoardProps) {
             </div>
           </div>
         )}
+      </div>
+
+      <CanvasDetailsPanel
+        isOpen={isCanvasDetailsOpen}
+        onClose={() => setIsCanvasDetailsOpen(false)}
+        showGrid={showGrid}
+        onToggleGrid={() => setShowGrid((visible) => !visible)}
+        zoom={viewport.zoom}
+        onZoomIn={() => setViewport({ ...viewport, zoom: Math.min(viewport.zoom + 0.2, 3) })}
+        onZoomOut={() => setViewport({ ...viewport, zoom: Math.max(viewport.zoom - 0.2, 0.2) })}
+        onResetZoom={() => setViewport({ ...viewport, zoom: 1 })}
+        onFitToScreen={() => {
+          const bounds = calculateElementsBounds(elements);
+          if (bounds && containerRef.current) {
+            const rect = containerRef.current.getBoundingClientRect();
+            const scaleX = (rect.width - 160) / bounds.width;
+            const scaleY = (rect.height - 160) / bounds.height;
+            const newZoom = Math.min(Math.max(Math.min(scaleX, scaleY), 0.25), 1.5);
+            setViewport({
+              zoom: newZoom,
+              x: (rect.width - bounds.width * newZoom) / 2 - bounds.minX * newZoom,
+              y: (rect.height - bounds.height * newZoom) / 2 - bounds.minY * newZoom,
+            });
+          }
+        }}
+        isLayersOpen={isLayersOpen}
+        onToggleLayers={() => setIsLayersOpen((open) => !open)}
+      />
       </div>
 
       {/* Keyboard Shortcuts Modal */}

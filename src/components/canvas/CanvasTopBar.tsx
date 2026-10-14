@@ -14,6 +14,9 @@ import {
   Grid, 
   Maximize2,
   Users,
+  Shapes,
+  PanelRight,
+  PanelRightClose,
   Copy,
   Sparkles
 } from 'lucide-react';
@@ -45,6 +48,8 @@ interface CanvasTopBarProps {
   documentId?: string;
   isOwner?: boolean;
   permission?: 'OWNER' | 'VIEWER' | 'EDITOR';
+  isSidebarOpen: boolean;
+  onToggleSidebar: () => void;
 }
 
 
@@ -71,6 +76,8 @@ export const CanvasTopBar: React.FC<CanvasTopBarProps> = ({
   documentId,
   isOwner,
   permission,
+  isSidebarOpen,
+  onToggleSidebar,
 }) => {
   const navigate = useNavigate();
 
@@ -113,23 +120,34 @@ export const CanvasTopBar: React.FC<CanvasTopBarProps> = ({
 
   return (
     <>
-      <header className="h-14 border-b border-workspace-200 flex items-center justify-between px-4 bg-white/90 backdrop-blur-md z-30 relative sticky top-0 shadow-xs select-none">
+      <header className="h-14 border-b border-workspace-200 flex items-center justify-between gap-2 px-3 sm:px-4 bg-white/80 backdrop-blur-md z-30 relative sticky top-0 shadow-sm select-none">
         {/* Left Section: Breadcrumb & Editable Title */}
-        <div className="flex items-center space-x-3 text-sm">
+        <div className="flex min-w-0 items-center gap-2 sm:gap-3 text-sm">
+          <button
+            type="button"
+            onClick={onToggleSidebar}
+            title={isSidebarOpen ? 'Hide Canvas Details' : 'Show Canvas Details'}
+            aria-label={isSidebarOpen ? 'Hide Canvas Details' : 'Show Canvas Details'}
+            aria-pressed={isSidebarOpen}
+            className={`shrink-0 p-2 rounded-lg transition-colors ${isSidebarOpen ? 'bg-primary-50 text-primary-700' : 'text-workspace-500 hover:bg-workspace-100'}`}
+          >
+            {isSidebarOpen ? <PanelRightClose className="w-4 h-4" /> : <PanelRight className="w-4 h-4" />}
+          </button>
           <button
             type="button"
             onClick={() => navigate('/dashboard')}
-            className="flex items-center space-x-1.5 bg-workspace-100 hover:bg-workspace-200 text-workspace-700 px-3 py-1.5 rounded-lg font-medium transition-colors shadow-2xs"
+            className="w-9 h-9 shrink-0 flex items-center justify-center border border-workspace-200 text-workspace-600 hover:bg-workspace-100 hover:text-workspace-900 rounded-lg transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500"
             title="Return to Dashboard"
+            aria-label="Return to Dashboard"
           >
             <ArrowLeft className="w-4 h-4" />
-            <span>Dashboard</span>
           </button>
 
-          <span className="text-workspace-300">/</span>
+          <span className="h-6 w-px bg-workspace-200 shrink-0" aria-hidden="true" />
+          <Shapes className="w-4 h-4 shrink-0 text-primary-600" />
 
           {/* Editable Canvas Title */}
-          <div className="flex items-center space-x-1.5 group">
+          <div className="flex min-w-0 items-center space-x-1.5 group">
             {isEditingTitle ? (
               <div className="flex items-center space-x-1">
                 <input
@@ -158,10 +176,10 @@ export const CanvasTopBar: React.FC<CanvasTopBarProps> = ({
               <button
                 type="button"
                 onClick={() => setIsEditingTitle(true)}
-                className="flex items-center space-x-1.5 px-2 py-1 rounded hover:bg-workspace-100 transition-colors text-left"
+                className="flex min-w-0 items-center space-x-1.5 rounded hover:bg-workspace-100 transition-colors text-left"
                 title="Click to rename canvas"
               >
-                <span className="font-semibold text-workspace-900 truncate max-w-[160px] md:max-w-xs">
+                <span className="font-semibold text-workspace-900 truncate max-w-[64px] sm:max-w-[140px] md:max-w-xs">
                   {title || 'Untitled Canvas'}
                 </span>
                 <Pencil className="w-3.5 h-3.5 text-workspace-400 opacity-0 group-hover:opacity-100 transition-opacity" />
@@ -201,7 +219,7 @@ export const CanvasTopBar: React.FC<CanvasTopBarProps> = ({
         </div>
 
         {/* Right Section: Sync Badge, Collaborators, Share & More Menu */}
-        <div className="flex items-center space-x-3">
+        <div className="flex shrink-0 items-center space-x-1 sm:space-x-2">
           {/* Sync / Save Status Badge */}
           <div
             className={`flex items-center space-x-1.5 text-xs font-medium px-2.5 py-1 rounded-full border transition-all ${
@@ -214,13 +232,13 @@ export const CanvasTopBar: React.FC<CanvasTopBarProps> = ({
               size={13}
               className={saveStatus === 'saving' ? 'animate-pulse text-amber-500' : 'text-emerald-500'}
             />
-            <span className="capitalize">{saveStatus === 'saved' ? 'Saved' : saveStatus === 'saving' ? 'Saving...' : 'Synced'}</span>
+            <span className="hidden sm:inline capitalize">{saveStatus === 'saved' ? 'Saved' : saveStatus === 'saving' ? 'Saving...' : 'Synced'}</span>
           </div>
 
           {/* Collaborator Avatars & Live Peers */}
           <div className="flex items-center -space-x-1.5">
             {remoteUsers.length > 0 ? (
-              remoteUsers.slice(0, 3).map((user) => (
+              remoteUsers.slice(0, 2).map((user) => (
                 <div
                   key={user.clientId}
                   className="relative group cursor-pointer"
@@ -272,10 +290,10 @@ export const CanvasTopBar: React.FC<CanvasTopBarProps> = ({
             <button
               type="button"
               onClick={() => setShowShareModal(true)}
-              className="flex items-center space-x-1.5 bg-primary-600 hover:bg-primary-700 text-white px-3 py-1.5 rounded-lg text-xs font-semibold transition-colors shadow-2xs cursor-pointer"
+              className="h-8 flex items-center space-x-1.5 bg-primary-600 hover:bg-primary-700 text-white px-2 sm:px-3 py-1.5 rounded-lg text-xs font-semibold transition-colors shadow-2xs cursor-pointer"
             >
               <Share2 className="w-3.5 h-3.5" />
-              <span>Share</span>
+              <span className="hidden sm:inline">Share</span>
             </button>
           ) : (
             <div className="px-2.5 py-1 rounded-lg text-xs font-medium bg-workspace-100 text-workspace-700 border border-workspace-200 flex items-center gap-1.5">

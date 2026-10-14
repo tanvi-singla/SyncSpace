@@ -31,12 +31,13 @@ import {
 import { DocumentFormattingBar } from '../components/DocumentFormattingBar';
 import { DocumentInspector } from '../components/DocumentInspector';
 import { SlashCommandMenu, SlashCommandItem } from '../components/SlashCommandMenu';
-import { useParams } from 'react-router-dom';
+import { useNavigate, useParams } from 'react-router-dom';
 import { CoverPickerModal } from '../components/document/CoverPickerModal';
 import { useWorkspace } from '../hooks/useWorkspace';
 import { useDocumentUI } from '../context/DocumentUIContext';
 import { useDocumentYjs } from '../hooks/useDocumentYjs';
 import { useAuth } from '../context/AuthContext';
+import { DocumentEditorHeader } from '../components/document/DocumentEditorHeader';
 
 export interface DocumentWorkspaceProps {
   workspaceState?: ReturnType<typeof useWorkspace>;
@@ -46,6 +47,7 @@ export interface DocumentWorkspaceProps {
 
 export function DocumentWorkspace({ workspaceState, showTopBar = false, documentId }: DocumentWorkspaceProps) {
   const { id: routeDocId } = useParams<{ id: string }>();
+  const navigate = useNavigate();
   const currentDocId = documentId || workspaceState?.currentDocId || routeDocId || '';
   const currentDocMeta = currentDocId && workspaceState?.documents ? workspaceState.documents[currentDocId] : undefined;
   const docUI = useDocumentUI();
@@ -235,6 +237,22 @@ export function DocumentWorkspace({ workspaceState, showTopBar = false, document
     <div className="flex flex-col h-full w-full bg-white text-workspace-900 overflow-hidden font-sans select-text">
       
       {/* Document Formatting Bar directly on top of document */}
+      <DocumentEditorHeader
+        title={docTitle}
+        documentId={currentDocId}
+        isOwner={!currentDocMeta?.isShared && (!currentDocMeta?.permission || currentDocMeta?.permission === 'OWNER')}
+        permission={currentDocMeta?.permission}
+        isSidebarOpen={docUI.isInspectorOpen}
+        onToggleSidebar={() => docUI.setIsInspectorOpen((open) => !open)}
+        connectionStatus={connectionStatus}
+        isIndexedDbSynced={isIndexedDbSynced}
+        collaborators={collaborators}
+        currentUser={user}
+        onBack={() => {
+          workspaceState?.setCurrentDocId(null);
+          navigate('/dashboard');
+        }}
+      />
       <DocumentFormattingBar
         documentId={currentDocId}
         documentTitle={docTitle}

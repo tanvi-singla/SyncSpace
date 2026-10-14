@@ -65,10 +65,10 @@ export function DocumentInspector(props: DocumentInspectorProps) {
   if (!isOpen) return null;
 
   return (
-    <aside className="w-[320px] border-l border-workspace-200 bg-white flex flex-col h-full overflow-y-auto custom-scrollbar select-none shrink-0 z-20 shadow-[-2px_0_12px_rgba(0,0,0,0.02)] animate-slide-in font-sans">
+    <aside className="absolute inset-y-0 right-0 z-30 flex w-[min(320px,88vw)] flex-col border-l border-workspace-200 bg-white h-full overflow-y-auto custom-scrollbar select-none shadow-[-2px_0_12px_rgba(0,0,0,0.04)] animate-slide-in font-sans sm:relative sm:inset-auto sm:z-20 sm:w-[min(320px,42vw)] sm:min-w-[240px] sm:shrink-0 sm:shadow-none">
       
       {/* Top Header with Icon, Title and Close */}
-      <div className="px-5 pt-4 pb-2 flex items-center justify-between">
+      <div className="h-14 min-h-14 px-5 flex items-center justify-between border-b border-workspace-200">
         <div className="flex items-center gap-2.5">
           <div className="w-6 h-6 rounded-md bg-primary-50 border border-primary-100 flex items-center justify-center text-primary-600">
             <FileText size={14} />

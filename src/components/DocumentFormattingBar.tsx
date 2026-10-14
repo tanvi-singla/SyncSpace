@@ -12,13 +12,9 @@ import {
   Image as ImageIcon,
   Quote,
   MessageSquare,
-  Plus,
-  Share2,
-  MoreHorizontal,
-  SlidersHorizontal
+  Plus
 } from 'lucide-react';
 import { useDocumentUI } from '../context/DocumentUIContext';
-import { ShareModal } from './document/ShareModal';
 import { CommentsDrawer } from './document/CommentsDrawer';
 
 export interface DocumentFormattingBarProps {
@@ -52,12 +48,7 @@ export function DocumentFormattingBar(props: DocumentFormattingBarProps) {
     else if (type === 'image') docUI.toggleHeaderItem('coverImage');
   });
   const onAddTask = props.onAddTask ?? (() => docUI.triggerAddBlock('checklist'));
-  const isInspectorOpen = props.isInspectorOpen ?? docUI.isInspectorOpen;
-  const onToggleInspector = props.onToggleInspector ?? (() => docUI.setIsInspectorOpen(prev => !prev));
-
   const [headingDropdownOpen, setHeadingDropdownOpen] = useState(false);
-  const [showMoreMenu, setShowMoreMenu] = useState(false);
-  const [isShareModalOpen, setIsShareModalOpen] = useState(false);
   const [isCommentsOpen, setIsCommentsOpen] = useState(false);
 
   const headings = ['Normal Text', 'Heading 1', 'Heading 2', 'Heading 3'];
@@ -80,10 +71,10 @@ export function DocumentFormattingBar(props: DocumentFormattingBarProps) {
 
   return (
     <>
-      <div className="h-12 w-full bg-white border-b border-workspace-200 px-4 flex items-center justify-between select-none shrink-0 z-20 font-sans">
+      <div className="h-12 w-full bg-white border-b border-workspace-200 px-4 flex items-center select-none shrink-0 z-20 font-sans overflow-x-auto">
         
         {/* Left Formatting Group */}
-        <div className="flex items-center gap-1.5 flex-wrap">
+        <div className="flex min-w-max items-center gap-1.5">
           
           {/* Vertical Separator */}
           <div className="h-4 w-[1px] bg-workspace-200 mr-1" />
@@ -294,93 +285,7 @@ export function DocumentFormattingBar(props: DocumentFormattingBarProps) {
 
         </div>
 
-        {/* Right Actions: Share, More, Toggle Inspector */}
-        <div className="flex items-center gap-2">
-          
-          {/* Share Button (Solid Primary Teal) - Only for Owner */}
-          {props.isOwner !== false ? (
-            <button
-              type="button"
-              onClick={() => setIsShareModalOpen(true)}
-              className="flex items-center gap-1.5 bg-primary-600 hover:bg-primary-700 text-white px-3.5 py-1.5 rounded-lg text-xs font-medium shadow-xs transition-colors cursor-pointer"
-            >
-              <Share2 size={13} />
-              <span>Share</span>
-            </button>
-          ) : (
-            <div className="px-2.5 py-1 rounded-lg text-xs font-medium bg-workspace-100 text-workspace-700 border border-workspace-200 flex items-center gap-1.5">
-              <span className="w-1.5 h-1.5 rounded-full bg-primary-500"></span>
-              <span>{props.permission === 'VIEWER' ? 'Viewer' : 'Editor'}</span>
-            </div>
-          )}
-
-          {/* More Actions (•••) */}
-          <div className="relative">
-            <button
-              type="button"
-              onClick={() => setShowMoreMenu(!showMoreMenu)}
-              title="More Options"
-              className="p-1.5 text-workspace-500 hover:text-workspace-700 hover:bg-workspace-100 rounded-md transition-colors cursor-pointer"
-            >
-              <MoreHorizontal size={16} />
-            </button>
-
-            {showMoreMenu && (
-              <>
-                <div className="fixed inset-0 z-30" onClick={() => setShowMoreMenu(false)} />
-                <div className="absolute right-0 top-full mt-1.5 z-40 w-44 bg-white border border-workspace-200 rounded-xl shadow-xl py-1 text-xs animate-fade-in font-sans">
-                  <button
-                    type="button"
-                    onClick={() => {
-                      onToggleInspector();
-                      setShowMoreMenu(false);
-                    }}
-                    className="w-full text-left px-3 py-2 flex items-center gap-2 hover:bg-workspace-100 text-workspace-700 transition-colors cursor-pointer"
-                  >
-                    <SlidersHorizontal size={14} />
-                    <span>{isInspectorOpen ? 'Hide Page Details' : 'Show Page Details'}</span>
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      window.print();
-                      setShowMoreMenu(false);
-                    }}
-                    className="w-full text-left px-3 py-2 hover:bg-workspace-100 text-workspace-700 transition-colors cursor-pointer"
-                  >
-                    Print document
-                  </button>
-                </div>
-              </>
-            )}
-          </div>
-
-          {/* Inspector Toggle Button */}
-          <button
-            type="button"
-            onClick={onToggleInspector}
-            title={isInspectorOpen ? 'Close Page Details' : 'Open Page Details'}
-            className={`p-1.5 rounded-md transition-colors cursor-pointer ${
-              isInspectorOpen
-                ? 'bg-primary-50 text-primary-700 ring-1 ring-primary-200'
-                : 'text-workspace-500 hover:text-workspace-700 hover:bg-workspace-100'
-            }`}
-          >
-            <SlidersHorizontal size={16} />
-          </button>
-
-        </div>
-
       </div>
-
-      {/* Share Modal */}
-      <ShareModal
-        isOpen={isShareModalOpen}
-        onClose={() => setIsShareModalOpen(false)}
-        documentId={props.documentId}
-        documentTitle={props.documentTitle}
-      />
-
 
       {/* Comments Drawer */}
       <CommentsDrawer
