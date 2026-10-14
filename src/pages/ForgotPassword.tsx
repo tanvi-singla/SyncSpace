@@ -10,8 +10,6 @@ export function ForgotPassword() {
   const [emailError, setEmailError] = useState<string | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [isSuccess, setIsSuccess] = useState(false);
-  const [devResetLink, setDevResetLink] = useState<string | null>(null);
-  const [devEmail, setDevEmail] = useState<string | null>(null);
 
   const navigate = useNavigate();
 
@@ -45,14 +43,8 @@ export function ForgotPassword() {
     setError(null);
 
     try {
-      const response = await forgotPasswordApi({ email });
+      await forgotPasswordApi({ email });
       setIsSuccess(true);
-      
-      // In development mode, show the reset link
-      if (response.devResetLink) {
-        setDevResetLink(response.devResetLink);
-        setDevEmail(response.devEmail || null);
-      }
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : 'Failed to send reset email';
       setError(msg);
@@ -134,23 +126,6 @@ export function ForgotPassword() {
             </div>
           )}
 
-          {/* Development Mode Reset Link */}
-          {isSuccess && devResetLink && (
-            <div className="p-4 rounded-xl bg-amber-50/80 border border-amber-200 text-amber-700 animate-fadeIn">
-              <div className="text-sm font-semibold mb-2">Development Mode - Reset Link:</div>
-              <div className="text-xs mb-1">Email: {devEmail}</div>
-              <Link 
-                to={devResetLink}
-                className="block text-xs break-all font-mono bg-amber-100 p-2 rounded text-amber-800 hover:bg-amber-200 hover:text-amber-900 transition-colors cursor-pointer"
-              >
-                {devResetLink}
-              </Link>
-              <div className="text-xs mt-2 text-amber-600">
-                Click the link above to test the password reset flow.
-              </div>
-            </div>
-          )}
-
           {/* Form */}
           {!isSuccess ? (
             <form className="space-y-5" onSubmit={handleSubmit} noValidate>
@@ -201,8 +176,6 @@ export function ForgotPassword() {
                 onClick={() => {
                   setIsSuccess(false);
                   setEmail('');
-                  setDevResetLink(null);
-                  setDevEmail(null);
                 }}
                 className="w-full flex items-center justify-center py-2.5 px-4 rounded-xl shadow-sm text-sm font-semibold text-primary-600 bg-primary-50 hover:bg-primary-100 focus:outline-none focus:ring-4 focus:ring-primary-100 transition-all"
               >

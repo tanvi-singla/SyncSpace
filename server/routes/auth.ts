@@ -4,9 +4,11 @@ import { prisma } from '../lib/db/client';
 import { hashPassword, verifyPassword } from '../lib/auth/password';
 import { signToken, setAuthCookie, clearAuthCookie } from '../lib/auth/jwt';
 import { requireAuth } from '../middleware/auth';
-import { registerSchema, loginSchema } from '../../src/lib/validation/auth';
+import { registerSchema, loginSchema, forgotPasswordSchema, resetPasswordSchema } from '../../src/lib/validation/auth';
 import { toSafeUser } from '../../src/types/auth';
-import { generateResetToken, verifyResetToken, calculateResetTokenExpiry, isResetTokenExpired } from '../lib/auth/tokens';
+import { generateResetToken, verifyResetToken, hashResetToken, calculateResetTokenExpiry } from '../lib/auth/tokens';
+import { logPasswordResetEmailFailure, sendPasswordResetEmail } from '../lib/auth/email';
+import { revokeUserConnections } from '../lib/yjs/sessionConnections';
 
 const router = Router();
 
@@ -46,7 +48,7 @@ router.post('/register', async (req: Request, res: Response): Promise<void> => {
     });
 
     // Generate JWT and set HttpOnly session cookie
-    const token = signToken({ userId: user.id, email: user.email });
+    const token = signToken({ userId: user.id, email: user.email, authVersion: user.authVersion });
     setAuthCookie(res, token);
 
     res.status(201).json(toSafeUser(user));
@@ -85,7 +87,7 @@ router.post('/login', async (req: Request, res: Response): Promise<void> => {
       return;
     }
 
-    const token = signToken({ userId: user.id, email: user.email });
+    const token = signToken({ userId: user.id, email: user.email, authVersion: user.authVersion });
     setAuthCookie(res, token);
 
     res.status(200).json(toSafeUser(user));
@@ -137,87 +139,60 @@ router.get('/ws-token', requireAuth, (req: Request, res: Response): void => {
     res.status(401).json({ error: 'Authentication required' });
     return;
   }
-  const token = signToken({ userId: req.user.userId, email: req.user.email });
+  const token = signToken({ userId: req.user.userId, email: req.user.email, authVersion: req.user.authVersion });
   res.status(200).json({ token, userId: req.user.userId });
 });
 
 
 /**
  * POST /api/auth/forgot-password
- * Initiates password reset by generating a secure token and storing its hash.
- * Returns a generic response regardless of whether the email exists (prevents user enumeration).
- * In development mode, returns the reset link for testing purposes.
+ * Sends a single-use reset link when the email exists, but always returns the same response.
  */
 router.post('/forgot-password', async (req: Request, res: Response): Promise<void> => {
+  const genericResponse = {
+    message: 'If an account exists for this email, a password reset link has been sent.'
+  };
+
   try {
-    const { email } = req.body;
-
-    if (!email || typeof email !== 'string') {
-      res.status(400).json({ error: 'Email is required' });
+    const parsed = forgotPasswordSchema.safeParse(req.body);
+    if (!parsed.success) {
+      res.status(400).json({ error: 'Enter a valid email address.' });
       return;
     }
 
-    // Find user by email (case-insensitive)
-    const user = await prisma.user.findFirst({
-      where: { email: email.toLowerCase() }
-    });
+    const { email } = parsed.data;
+    const user = await prisma.user.findUnique({ where: { email } });
+    if (user) {
+      // Continue after responding so lookup timing does not reveal account existence.
+      void (async () => {
+        const { token, tokenHash } = generateResetToken();
+        const expiresAt = calculateResetTokenExpiry();
+        await prisma.$transaction(async (tx) => {
+          await tx.passwordResetToken.deleteMany({ where: { userId: user.id } });
+          await tx.passwordResetToken.create({
+            data: { userId: user.id, tokenHash, expiresAt }
+          });
+        });
 
-    // Generic response regardless of whether user exists
-    const genericResponse = {
-      message: 'If an account exists for this email, a password reset link has been sent.'
-    };
-
-    if (!user) {
-      // User doesn't exist - return generic response to prevent enumeration
-      res.status(200).json(genericResponse);
-      return;
-    }
-
-    // Invalidate any existing reset tokens for this user
-    await prisma.passwordResetToken.deleteMany({
-      where: { userId: user.id }
-    });
-
-    // Generate new reset token
-    const { token, tokenHash } = generateResetToken();
-    const expiresAt = calculateResetTokenExpiry();
-
-    // Store token hash in database
-    await prisma.passwordResetToken.create({
-      data: {
-        userId: user.id,
-        tokenHash,
-        expiresAt
-      }
-    });
-
-    // In development mode, return the reset link for testing
-    if (process.env.NODE_ENV !== 'production') {
-      const resetLink = `${process.env.FRONTEND_URL || 'http://localhost:5173'}/reset-password?token=${token}`;
-      console.log('\n=== PASSWORD RESET LINK (DEVELOPMENT MODE) ===');
-      console.log(`Email: ${user.email}`);
-      console.log(`Reset Link: ${resetLink}`);
-      console.log('==============================================\n');
-      
-      res.status(200).json({
-        ...genericResponse,
-        // Only include this in development for testing
-        ...(process.env.NODE_ENV !== 'production' && { 
-          devResetLink: resetLink,
-          devEmail: user.email 
-        })
+        try {
+          const frontendUrl = process.env.FRONTEND_URL ||
+            (process.env.NODE_ENV === 'production' ? '' : 'http://localhost:5173');
+          if (!frontendUrl) throw new Error('Frontend URL is not configured');
+          const resetUrl = new URL('/reset-password', frontendUrl);
+          resetUrl.hash = new URLSearchParams({ token }).toString();
+          await sendPasswordResetEmail(user.email, resetUrl.toString());
+        } catch (error) {
+          logPasswordResetEmailFailure(error);
+        }
+      })().catch(() => {
+        console.error('Password reset request could not be processed.');
       });
-    } else {
-      // In production, just return the generic response
-      // Email would be sent here via a real email service
-      res.status(200).json(genericResponse);
     }
+
+    res.status(200).json(genericResponse);
   } catch (err) {
-    console.error('Forgot password error:', err);
-    // Still return generic response to prevent enumeration
-    res.status(200).json({
-      message: 'If an account exists for this email, a password reset link has been sent.'
-    });
+    console.error('Password reset request could not be processed.');
+    res.status(200).json(genericResponse);
   }
 });
 
@@ -227,86 +202,69 @@ router.post('/forgot-password', async (req: Request, res: Response): Promise<voi
  */
 router.post('/reset-password', async (req: Request, res: Response): Promise<void> => {
   try {
-    const { token, password } = req.body;
-
-    if (!token || typeof token !== 'string') {
-      res.status(400).json({ error: 'Reset token is required' });
-      return;
-    }
-
-    if (!password || typeof password !== 'string') {
-      res.status(400).json({ error: 'Password is required' });
-      return;
-    }
-
-    // Validate password strength (same as registration)
-    const passwordValidation = registerSchema.shape.password.safeParse(password);
-    if (!passwordValidation.success) {
+    const parsed = resetPasswordSchema.safeParse(req.body);
+    if (!parsed.success) {
       res.status(400).json({
         error: 'Password does not meet requirements',
-        details: passwordValidation.error.issues
+        details: parsed.error.issues
       });
       return;
     }
+    const { token, password } = parsed.data;
 
-    // Find all reset tokens and verify the provided token
-    const resetTokens = await prisma.passwordResetToken.findMany({
-      where: { usedAt: null },
-      include: { user: true }
+    const now = new Date();
+    let resetRecord = await prisma.passwordResetToken.findFirst({
+      where: { tokenHash: hashResetToken(token) }
     });
 
-    let validToken = null;
-    for (const resetToken of resetTokens) {
-      const isValid = await verifyResetToken(token, resetToken.tokenHash);
-      if (isValid) {
-        validToken = resetToken;
-        break;
+    // Support reset links issued before token hashes changed from bcrypt to indexed SHA-256.
+    if (!resetRecord) {
+      const legacyRecords = await prisma.passwordResetToken.findMany({
+        where: { tokenHash: { startsWith: '$2' }, usedAt: null, expiresAt: { gt: now } }
+      });
+      for (const candidate of legacyRecords) {
+        if (await verifyResetToken(token, candidate.tokenHash)) {
+          resetRecord = candidate;
+          break;
+        }
       }
     }
 
-    if (!validToken) {
-      res.status(400).json({ error: 'Invalid or expired reset token' });
+    if (!resetRecord || resetRecord.usedAt || resetRecord.expiresAt <= now) {
+      res.status(400).json({ error: 'This reset link is invalid, expired, or already used.' });
       return;
     }
 
-    // Check if token has expired
-    if (isResetTokenExpired(validToken.expiresAt)) {
-      res.status(400).json({ error: 'Reset token has expired' });
-      return;
-    }
-
-    // Check if token has already been used
-    if (validToken.usedAt) {
-      res.status(400).json({ error: 'Reset token has already been used' });
-      return;
-    }
-
-    // Hash the new password
     const passwordHash = await hashPassword(password);
+    const consumed = await prisma.$transaction(async (tx) => {
+      const claimedAt = new Date();
+      // Claim the token with a conditional write. Only one concurrent request can win.
+      const claim = await tx.passwordResetToken.updateMany({
+        where: { id: resetRecord.id, usedAt: null, expiresAt: { gt: claimedAt } },
+        data: { usedAt: claimedAt }
+      });
+      if (claim.count !== 1) return false;
 
-    // Update user's password
-    await prisma.user.update({
-      where: { id: validToken.userId },
-      data: { passwordHash }
+      await tx.user.update({
+        where: { id: resetRecord.userId },
+        data: { passwordHash, authVersion: { increment: 1 } }
+      });
+      await tx.passwordResetToken.deleteMany({
+        where: { userId: resetRecord.userId, id: { not: resetRecord.id } }
+      });
+      return true;
     });
 
-    // Mark the token as used
-    await prisma.passwordResetToken.update({
-      where: { id: validToken.id },
-      data: { usedAt: new Date() }
-    });
+    if (!consumed) {
+      res.status(400).json({ error: 'This reset link is invalid, expired, or already used.' });
+      return;
+    }
 
-    // Invalidate all other reset tokens for this user
-    await prisma.passwordResetToken.deleteMany({
-      where: {
-        userId: validToken.userId,
-        id: { not: validToken.id }
-      }
-    });
-
+    revokeUserConnections(resetRecord.userId);
+    clearAuthCookie(res);
     res.status(200).json({ message: 'Password has been reset successfully' });
   } catch (err) {
-    console.error('Reset password error:', err);
+    console.error('Password reset could not be completed.');
     res.status(500).json({ error: 'Internal server error' });
   }
 });

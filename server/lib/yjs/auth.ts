@@ -90,6 +90,29 @@ export async function authorizeYjsConnection(
 
   const userId = payload.userId;
 
+  try {
+    const authenticatedUser = await prisma.user.findUnique({
+      where: { id: userId },
+      select: { authVersion: true },
+    });
+    if (!authenticatedUser || authenticatedUser.authVersion !== payload.authVersion) {
+      return {
+        authorized: false,
+        status: 401,
+        reason: 'Invalid or expired authentication token.',
+        parsedRoom,
+      };
+    }
+  } catch (error) {
+    console.error('Yjs session authorization failed:', error);
+    return {
+      authorized: false,
+      status: 500,
+      reason: 'Internal database error during authorization.',
+      parsedRoom,
+    };
+  }
+
   // 2. Directory room (active workspace presence for authenticated users)
   if (parsedRoom.type === 'directory') {
     return {

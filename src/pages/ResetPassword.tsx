@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { useNavigate, useLocation, Link } from 'react-router-dom';
 import { resetPasswordSchema } from '../lib/validation/auth';
 import { resetPasswordApi } from '../lib/api/auth';
+import { useAuth } from '../context/AuthContext';
 import { Layers, Loader2, AlertCircle, CheckCircle, Eye, EyeOff, Lock, ArrowLeft } from 'lucide-react';
 
 export function ResetPassword() {
@@ -19,18 +20,27 @@ export function ResetPassword() {
 
   const navigate = useNavigate();
   const location = useLocation();
+  const { logout } = useAuth();
 
   // Extract token from URL on mount
   useEffect(() => {
     const searchParams = new URLSearchParams(location.search);
-    const tokenParam = searchParams.get('token');
+    const fragmentParams = new URLSearchParams(location.hash.replace(/^#/, ''));
+    const tokenParam = fragmentParams.get('token') || searchParams.get('token');
     if (!tokenParam) {
       setIsTokenValid(false);
-      setError('Invalid reset link. Please request a new password reset.');
+      setError('This reset link is invalid, expired, or already used. Please request a new password reset.');
     } else {
       setToken(tokenParam);
+      // Keep the single-use token out of browser history after the page has read it.
+      if (fragmentParams.has('token') || searchParams.has('token')) {
+        const cleanSearch = new URLSearchParams(location.search);
+        cleanSearch.delete('token');
+        const cleanQuery = cleanSearch.toString();
+        window.history.replaceState(null, '', `${location.pathname}${cleanQuery ? `?${cleanQuery}` : ''}`);
+      }
     }
-  }, [location.search]);
+  }, [location.hash, location.pathname, location.search]);
 
   // Live password strength indicator checks
   const hasMinLength = password.length >= 8;
@@ -91,6 +101,8 @@ export function ResetPassword() {
         password,
         confirmPassword,
       });
+      // Clear any in-memory client session as well as the invalidated server cookie.
+      await logout();
       setIsSuccess(true);
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : 'Failed to reset password';

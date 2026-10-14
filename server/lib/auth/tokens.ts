@@ -1,7 +1,6 @@
 import crypto from 'crypto';
 import bcrypt from 'bcryptjs';
 
-const DEFAULT_SALT_ROUNDS = 12;
 const RESET_TOKEN_EXPIRY_MINUTES = 30; // 30 minutes
 const RESET_TOKEN_LENGTH = 32; // 32 bytes = 256 bits
 
@@ -11,8 +10,13 @@ const RESET_TOKEN_LENGTH = 32; // 32 bytes = 256 bits
  */
 export function generateResetToken(): { token: string; tokenHash: string } {
   const token = crypto.randomBytes(RESET_TOKEN_LENGTH).toString('hex');
-  const tokenHash = bcrypt.hashSync(token, DEFAULT_SALT_ROUNDS);
+  const tokenHash = hashResetToken(token);
   return { token, tokenHash };
+}
+
+/** A fast, deterministic hash for indexed token lookup; reset tokens have 256 bits of entropy. */
+export function hashResetToken(token: string): string {
+  return crypto.createHash('sha256').update(token, 'utf8').digest('hex');
 }
 
 /**
@@ -20,6 +24,10 @@ export function generateResetToken(): { token: string; tokenHash: string } {
  */
 export async function verifyResetToken(token: string, tokenHash: string): Promise<boolean> {
   try {
+    if (/^[a-f0-9]{64}$/i.test(tokenHash)) {
+      return crypto.timingSafeEqual(Buffer.from(hashResetToken(token), 'hex'), Buffer.from(tokenHash, 'hex'));
+    }
+    // Accept outstanding bcrypt-hashed reset links created by the previous implementation.
     return await bcrypt.compare(token, tokenHash);
   } catch {
     return false;

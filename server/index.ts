@@ -1,3 +1,4 @@
+import './lib/config/env';
 import http from 'http';
 import express from 'express';
 import type { Request, Response, NextFunction } from 'express';
@@ -7,6 +8,9 @@ import { authRouter } from './routes/auth';
 import { documentsRouter } from './routes/documents';
 import { createYjsServer, setupAuthorizedWSConnection } from './yjsServer';
 import { authorizeYjsConnection } from './lib/yjs/auth';
+import { logPasswordResetEmailConfiguration } from './lib/auth/email';
+
+logPasswordResetEmailConfiguration();
 
 const app = express();
 

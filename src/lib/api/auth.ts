@@ -85,9 +85,9 @@ export async function getCurrentUserApi(): Promise<SafeUser | null> {
 
 /**
  * Initiates password reset by sending the user's email.
- * Returns the response which may include development reset link in non-production mode.
+ * Returns a generic response so the account's existence is not disclosed.
  */
-export async function forgotPasswordApi(data: ForgotPasswordInput): Promise<{ message: string; devResetLink?: string; devEmail?: string }> {
+export async function forgotPasswordApi(data: ForgotPasswordInput): Promise<{ message: string }> {
   const res = await fetch('/api/auth/forgot-password', {
     method: 'POST',
     headers: {
@@ -95,7 +95,7 @@ export async function forgotPasswordApi(data: ForgotPasswordInput): Promise<{ me
     },
     body: JSON.stringify(data),
   });
-  return handleResponse<{ message: string; devResetLink?: string; devEmail?: string }>(res);
+  return handleResponse<{ message: string }>(res);
 }
 
 /**

@@ -1,0 +1,25 @@
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { afterEach, describe, expect, it } from 'vitest';
+import { loadServerEnvironment } from '../env';
+
+const testVariable = 'SYNCSPACE_ENV_FILE_LOAD_TEST';
+
+afterEach(() => {
+  delete process.env[testVariable];
+});
+
+describe('server environment loading', () => {
+  it('loads an existing server .env file without logging its values', () => {
+    const directory = mkdtempSync(join(tmpdir(), 'syncspace-env-test-'));
+    const envFile = join(directory, '.env');
+    writeFileSync(envFile, `${testVariable}=loaded-from-env-file\n`, 'utf8');
+    try {
+      loadServerEnvironment(envFile);
+      expect(process.env[testVariable]).toBe('loaded-from-env-file');
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+});

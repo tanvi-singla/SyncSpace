@@ -7,6 +7,7 @@ import * as awarenessProtocol from 'y-protocols/awareness';
 import * as encoding from 'lib0/encoding';
 import * as decoding from 'lib0/decoding';
 import { authorizeYjsConnection, type YjsAuthResult } from './lib/yjs/auth';
+import { registerUserConnection } from './lib/yjs/sessionConnections';
 
 const messageSync = 0;
 const messageAwareness = 1;
@@ -122,6 +123,9 @@ export function setupAuthorizedWSConnection(
   conn.binaryType = 'arraybuffer';
   const doc = getYDoc(roomName, true);
   doc.conns.set(conn, new Set<number>());
+  const unregisterUserConnection = authResult.userId
+    ? registerUserConnection(authResult.userId, conn)
+    : () => {};
 
   const isViewer = authResult.permission === 'VIEWER';
 
@@ -204,6 +208,7 @@ export function setupAuthorizedWSConnection(
   }, 30000);
 
   conn.on('close', () => {
+    unregisterUserConnection();
     closeConn(doc, conn);
     clearInterval(pingInterval);
   });

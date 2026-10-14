@@ -7,7 +7,10 @@ export const AUTH_COOKIE_NAME = 'auth_token';
 export interface TokenPayload {
   userId: string;
   email: string;
+  authVersion: number;
 }
+
+type TokenClaims = Omit<TokenPayload, 'authVersion'> & { authVersion?: number };
 
 const JWT_SECRET = process.env.JWT_SECRET || 'syncspace-dev-secret-change-in-prod';
 const JWT_EXPIRES_IN: SignOptions['expiresIn'] = '7d';
@@ -16,8 +19,8 @@ const COOKIE_MAX_AGE = 7 * 24 * 60 * 60 * 1000; // 7 days in milliseconds
 /**
  * Signs a JWT token containing the user identity payload with a 7-day expiration.
  */
-export function signToken(payload: TokenPayload): string {
-  return jwt.sign(payload, JWT_SECRET, { expiresIn: JWT_EXPIRES_IN });
+export function signToken(payload: TokenClaims): string {
+  return jwt.sign({ ...payload, authVersion: payload.authVersion ?? 0 }, JWT_SECRET, { expiresIn: JWT_EXPIRES_IN });
 }
 
 /**
@@ -30,6 +33,10 @@ export function verifyToken(token: string): TokenPayload | null {
       return {
         userId: (decoded as { userId: string }).userId,
         email: (decoded as { email: string }).email,
+        // Tokens minted before authVersion was added remain valid at the default version.
+        authVersion: typeof (decoded as { authVersion?: unknown }).authVersion === 'number'
+          ? (decoded as { authVersion: number }).authVersion
+          : 0,
       };
     }
     return null;
