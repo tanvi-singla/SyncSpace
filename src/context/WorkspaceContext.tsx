@@ -211,6 +211,9 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
     const resolvedTitle = title?.trim() || (type === 'canvas' ? 'Untitled Canvas' : 'Untitled Document');
     try {
       const newDocument = await createDocumentApi(type, resolvedTitle, user?.name ?? 'Unknown');
+      if (!newDocument || !newDocument.id) {
+        throw new Error('Server returned an invalid document record');
+      }
       setDocuments((previous) => ({ ...previous, [newDocument.id]: newDocument }));
       return newDocument.id;
     } catch (error) { setSaveStatus('error'); throw error; }

@@ -22,4 +22,23 @@ describe('server environment loading', () => {
       rmSync(directory, { recursive: true, force: true });
     }
   });
+
+  it('ensures injected process environment variables take precedence over .env file', () => {
+    process.env[testVariable] = 'injected-deployment-variable';
+    const directory = mkdtempSync(join(tmpdir(), 'syncspace-env-test-'));
+    const envFile = join(directory, '.env');
+    writeFileSync(envFile, `${testVariable}=from-env-file\n`, 'utf8');
+    try {
+      loadServerEnvironment(envFile);
+      expect(process.env[testVariable]).toBe('injected-deployment-variable');
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  it('safely handles missing environment file without crashing', () => {
+    expect(() => {
+      loadServerEnvironment('/path/to/nonexistent/file/.env');
+    }).not.toThrow();
+  });
 });

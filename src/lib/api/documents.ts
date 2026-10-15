@@ -1,4 +1,5 @@
 import type { DocumentMeta, DocumentPermission, DocumentShareInfo, SharedDocumentItem } from '../../types/dashboard';
+import { getApiBaseUrl } from './auth';
 
 /**
  * Shape of a document as returned by the API (dates are ISO strings, not ms timestamps).
@@ -83,7 +84,8 @@ async function handleResponse<T>(res: Response): Promise<T> {
  * Fetches all documents (including soft-deleted) for the authenticated user.
  */
 export async function listDocumentsApi(userName: string): Promise<DocumentMeta[]> {
-  const res = await fetch('/api/documents', {
+  const baseUrl = getApiBaseUrl();
+  const res = await fetch(`${baseUrl}/api/documents`, {
     method: 'GET',
     credentials: 'include',
   });
@@ -102,7 +104,8 @@ export async function createDocumentApi(
   title: string,
   userName: string
 ): Promise<DocumentMeta> {
-  const res = await fetch('/api/documents', {
+  const baseUrl = getApiBaseUrl();
+  const res = await fetch(`${baseUrl}/api/documents`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     credentials: 'include',
@@ -121,7 +124,8 @@ export async function updateDocumentApi(
   patch: Partial<{ title: string; isFavorite: boolean; isDeleted: boolean; deletedAt: string | null }>,
   userName: string
 ): Promise<DocumentMeta> {
-  const res = await fetch(`/api/documents/${id}`, {
+  const baseUrl = getApiBaseUrl();
+  const res = await fetch(`${baseUrl}/api/documents/${id}`, {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
     credentials: 'include',
@@ -136,7 +140,8 @@ export async function updateDocumentApi(
  * Permanently deletes a document.
  */
 export async function deleteDocumentApi(id: string): Promise<void> {
-  const res = await fetch(`/api/documents/${id}`, {
+  const baseUrl = getApiBaseUrl();
+  const res = await fetch(`${baseUrl}/api/documents/${id}`, {
     method: 'DELETE',
     credentials: 'include',
   });
@@ -150,7 +155,8 @@ export async function deleteDocumentApi(id: string): Promise<void> {
  * Fetches a single document's metadata and user role.
  */
 export async function getDocumentApi(id: string, fallbackUserName = ''): Promise<DocumentMeta> {
-  const res = await fetch(`/api/documents/${id}`, {
+  const baseUrl = getApiBaseUrl();
+  const res = await fetch(`${baseUrl}/api/documents/${id}`, {
     method: 'GET',
     credentials: 'include',
   });
@@ -163,7 +169,8 @@ export async function getDocumentApi(id: string, fallbackUserName = ''): Promise
  * Returns documents shared with the currently authenticated user.
  */
 export async function getSharedDocumentsApi(): Promise<DocumentMeta[]> {
-  const res = await fetch('/api/documents/shared-with-me', {
+  const baseUrl = getApiBaseUrl();
+  const res = await fetch(`${baseUrl}/api/documents/shared-with-me`, {
     method: 'GET',
     credentials: 'include',
   });
@@ -181,7 +188,8 @@ export async function shareDocumentApi(
   email: string,
   permission: DocumentPermission
 ): Promise<DocumentShareInfo> {
-  const res = await fetch(`/api/documents/${documentId}/share`, {
+  const baseUrl = getApiBaseUrl();
+  const res = await fetch(`${baseUrl}/api/documents/${documentId}/share`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     credentials: 'include',
@@ -195,7 +203,8 @@ export async function shareDocumentApi(
  * Returns all active shares for a document (owner only).
  */
 export async function getDocumentSharesApi(documentId: string): Promise<DocumentShareInfo[]> {
-  const res = await fetch(`/api/documents/${documentId}/shares`, {
+  const baseUrl = getApiBaseUrl();
+  const res = await fetch(`${baseUrl}/api/documents/${documentId}/shares`, {
     method: 'GET',
     credentials: 'include',
   });
@@ -211,7 +220,8 @@ export async function updateSharePermissionApi(
   userId: string,
   permission: DocumentPermission
 ): Promise<DocumentShareInfo> {
-  const res = await fetch(`/api/documents/${documentId}/share/${userId}`, {
+  const baseUrl = getApiBaseUrl();
+  const res = await fetch(`${baseUrl}/api/documents/${documentId}/share/${userId}`, {
     method: 'PATCH',
     headers: { 'Content-Type': 'application/json' },
     credentials: 'include',
@@ -225,7 +235,8 @@ export async function updateSharePermissionApi(
  * Revokes sharing access for a user (owner only).
  */
 export async function removeShareApi(documentId: string, userId: string): Promise<void> {
-  const res = await fetch(`/api/documents/${documentId}/share/${userId}`, {
+  const baseUrl = getApiBaseUrl();
+  const res = await fetch(`${baseUrl}/api/documents/${documentId}/share/${userId}`, {
     method: 'DELETE',
     credentials: 'include',
   });

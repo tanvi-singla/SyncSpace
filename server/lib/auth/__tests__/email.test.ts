@@ -36,6 +36,18 @@ describe('Resend password reset email service', () => {
     expect(info.mock.calls.flat().join(' ')).not.toContain('test-api-key');
   });
 
+  it('differentiates missing API key vs missing sender address', async () => {
+    vi.stubEnv('RESEND_API_KEY', '');
+    vi.stubEnv('PASSWORD_RESET_FROM_EMAIL', 'SyncSpace <onboarding@resend.dev>');
+    await expect(sendPasswordResetEmail('person@example.test', 'https://app.test/reset#token=secret'))
+      .rejects.toMatchObject({ code: 'missing_api_key' });
+
+    vi.stubEnv('RESEND_API_KEY', 'test-api-key');
+    vi.stubEnv('PASSWORD_RESET_FROM_EMAIL', '');
+    await expect(sendPasswordResetEmail('person@example.test', 'https://app.test/reset#token=secret'))
+      .rejects.toMatchObject({ code: 'missing_from_email' });
+  });
+
   it('sends using the configured sender and reset link', async () => {
     vi.stubEnv('RESEND_API_KEY', 'test-api-key');
     vi.stubEnv('PASSWORD_RESET_FROM_EMAIL', 'SyncSpace <onboarding@resend.dev>');
@@ -55,7 +67,9 @@ describe('Resend password reset email service', () => {
 
   it.each([
     [401, { name: 'validation_error', message: 'Invalid API key' }, 'invalid_api_key'],
-    [403, { name: 'validation_error', message: 'You can only send testing emails to your own email address' }, 'sender_restriction'],
+    [403, { name: 'validation_error', message: 'You can only send testing emails to your own email address' }, 'recipient_restriction'],
+    [403, { name: 'validation_error', message: 'The domain syncspace.dev is not verified. Please verify it at resend.com/domains.' }, 'sender_restriction'],
+    [429, { name: 'rate_limit_exceeded', message: 'Too many requests' }, 'rate_limit_exceeded'],
     [500, { name: 'internal_error', message: 'Provider failure' }, 'provider_api_failure'],
   ] as const)('categorizes Resend HTTP %i errors safely', async (status, payload, code) => {
     vi.stubEnv('RESEND_API_KEY', 'test-api-key');

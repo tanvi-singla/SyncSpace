@@ -83,23 +83,44 @@ export function Dashboard() {
   }, [filter, refreshDocuments]);
   const [isDragging, setIsDragging] = useState(false);
 
+  const [isCreating, setIsCreating] = useState<'canvas' | 'doc' | null>(null);
+  const [createError, setCreateError] = useState<string | null>(null);
+
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const handleCreateCanvas = async () => {
+    if (isCreating) return;
+    setIsCreating('canvas');
+    setCreateError(null);
     try {
       const id = await createItem('canvas');
+      if (!id || typeof id !== 'string') {
+        throw new Error('Failed to create canvas: invalid ID returned');
+      }
       navigate(`/workspace/${id}`);
-    } catch {
-      // createItem logs errors internally; surface nothing to avoid breaking UX
+    } catch (err: any) {
+      console.error('Create canvas error:', err);
+      setCreateError(err?.message || 'Failed to create canvas. Please try again.');
+    } finally {
+      setIsCreating(null);
     }
   };
 
   const handleCreateDocument = async () => {
+    if (isCreating) return;
+    setIsCreating('doc');
+    setCreateError(null);
     try {
       const id = await createItem('doc');
+      if (!id || typeof id !== 'string') {
+        throw new Error('Failed to create document: invalid ID returned');
+      }
       navigate(`/workspace/${id}`);
-    } catch {
-      // createItem logs errors internally; surface nothing to avoid breaking UX
+    } catch (err: any) {
+      console.error('Create document error:', err);
+      setCreateError(err?.message || 'Failed to create document. Please try again.');
+    } finally {
+      setIsCreating(null);
     }
   };
 
@@ -228,18 +249,28 @@ export function Dashboard() {
           <div className="flex flex-wrap items-center gap-3">
             <button
               onClick={handleCreateCanvas}
-              className="flex items-center justify-center space-x-2 bg-primary-600 hover:bg-primary-700 text-white px-4 py-2 rounded-md font-medium transition-colors shadow-sm"
+              disabled={isCreating !== null}
+              className="flex items-center justify-center space-x-2 bg-primary-600 hover:bg-primary-700 text-white px-4 py-2 rounded-md font-medium transition-colors shadow-sm disabled:opacity-60 disabled:cursor-not-allowed"
             >
-              <LayoutGrid size={18} />
-              <span>New Canvas</span>
+              {isCreating === 'canvas' ? (
+                <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" />
+              ) : (
+                <LayoutGrid size={18} />
+              )}
+              <span>{isCreating === 'canvas' ? 'Creating Canvas...' : 'New Canvas'}</span>
             </button>
 
             <button
               onClick={handleCreateDocument}
-              className="flex items-center justify-center space-x-2 bg-white border border-workspace-200 hover:bg-workspace-50 text-workspace-800 px-4 py-2 rounded-md font-medium transition-colors shadow-sm"
+              disabled={isCreating !== null}
+              className="flex items-center justify-center space-x-2 bg-white border border-workspace-200 hover:bg-workspace-50 text-workspace-800 px-4 py-2 rounded-md font-medium transition-colors shadow-sm disabled:opacity-60 disabled:cursor-not-allowed"
             >
-              <FileText size={18} />
-              <span>New Document</span>
+              {isCreating === 'doc' ? (
+                <div className="w-4 h-4 border-2 border-workspace-700 border-t-transparent rounded-full animate-spin" />
+              ) : (
+                <FileText size={18} />
+              )}
+              <span>{isCreating === 'doc' ? 'Creating Document...' : 'New Document'}</span>
             </button>
 
             <input
@@ -259,6 +290,19 @@ export function Dashboard() {
             </button>
           </div>
         </div>
+
+        {createError && (
+          <div className="bg-red-50 border border-red-200 text-red-700 px-4 py-3 rounded-xl mb-6 flex items-center justify-between text-sm shadow-xs">
+            <span>{createError}</span>
+            <button
+              onClick={() => setCreateError(null)}
+              className="text-red-500 hover:text-red-700 font-bold ml-4 text-base leading-none"
+              aria-label="Dismiss error"
+            >
+              &times;
+            </button>
+          </div>
+        )}
 
         {/* Second Row: Filters & Search */}
         <div className="flex items-center justify-between gap-4 w-full mb-8">
@@ -377,13 +421,30 @@ export function Dashboard() {
               <p className="text-sm text-workspace-500 mb-6 text-center max-w-sm">
                 Create your first Canvas or Document to get started.
               </p>
-              <div className="flex space-x-4">
+              <div className="flex flex-wrap items-center justify-center gap-3">
                 <button
                   onClick={handleCreateCanvas}
-                  className="flex items-center justify-center space-x-2 bg-primary-600 hover:bg-primary-700 text-white px-4 py-2 rounded-md font-medium transition-colors shadow-sm"
+                  disabled={isCreating !== null}
+                  className="flex items-center justify-center space-x-2 bg-primary-600 hover:bg-primary-700 text-white px-4 py-2 rounded-md font-medium transition-colors shadow-sm disabled:opacity-60 disabled:cursor-not-allowed"
                 >
-                  <Plus size={18} />
-                  <span>New Canvas</span>
+                  {isCreating === 'canvas' ? (
+                    <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" />
+                  ) : (
+                    <Plus size={18} />
+                  )}
+                  <span>{isCreating === 'canvas' ? 'Creating Canvas...' : 'New Canvas'}</span>
+                </button>
+                <button
+                  onClick={handleCreateDocument}
+                  disabled={isCreating !== null}
+                  className="flex items-center justify-center space-x-2 bg-white border border-workspace-200 hover:bg-workspace-50 text-workspace-800 px-4 py-2 rounded-md font-medium transition-colors shadow-sm disabled:opacity-60 disabled:cursor-not-allowed"
+                >
+                  {isCreating === 'doc' ? (
+                    <div className="w-4 h-4 border-2 border-workspace-700 border-t-transparent rounded-full animate-spin" />
+                  ) : (
+                    <FileText size={18} />
+                  )}
+                  <span>{isCreating === 'doc' ? 'Creating Document...' : 'New Document'}</span>
                 </button>
               </div>
             </div>

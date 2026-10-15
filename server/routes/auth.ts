@@ -7,7 +7,7 @@ import { requireAuth } from '../middleware/auth';
 import { registerSchema, loginSchema, forgotPasswordSchema, resetPasswordSchema } from '../../src/lib/validation/auth';
 import { toSafeUser } from '../../src/types/auth';
 import { generateResetToken, verifyResetToken, hashResetToken, calculateResetTokenExpiry } from '../lib/auth/tokens';
-import { logPasswordResetEmailFailure, sendPasswordResetEmail } from '../lib/auth/email';
+import { logPasswordResetEmailFailure, sendPasswordResetEmail, PasswordResetEmailError } from '../lib/auth/email';
 import { revokeUserConnections } from '../lib/yjs/sessionConnections';
 
 const router = Router();
@@ -175,9 +175,9 @@ router.post('/forgot-password', async (req: Request, res: Response): Promise<voi
         });
 
         try {
-          const frontendUrl = process.env.FRONTEND_URL ||
+          const frontendUrl = process.env.FRONTEND_URL || process.env.CLIENT_URL ||
             (process.env.NODE_ENV === 'production' ? '' : 'http://localhost:5173');
-          if (!frontendUrl) throw new Error('Frontend URL is not configured');
+          if (!frontendUrl) throw new PasswordResetEmailError('missing_configuration');
           const resetUrl = new URL('/reset-password', frontendUrl);
           resetUrl.hash = new URLSearchParams({ token }).toString();
           await sendPasswordResetEmail(user.email, resetUrl.toString());

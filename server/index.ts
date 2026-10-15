@@ -16,10 +16,11 @@ const app = express();
 
 // CORS configuration for local, LAN, and production Vite clients
 const allowedOrigins = [
-  process.env.CLIENT_URL || 'http://localhost:5173',
+  process.env.CLIENT_URL,
+  process.env.FRONTEND_URL,
   'http://localhost:5173',
   'http://127.0.0.1:5173',
-];
+].filter((url): url is string => typeof url === 'string' && url.length > 0);
 
 app.use(
   cors({

@@ -1,9 +1,15 @@
+import '../config/env';
+
 const RESEND_EMAILS_URL = 'https://api.resend.com/emails';
 
 export type PasswordResetEmailErrorCode =
   | 'missing_configuration'
+  | 'missing_api_key'
+  | 'missing_from_email'
   | 'invalid_api_key'
   | 'sender_restriction'
+  | 'recipient_restriction'
+  | 'rate_limit_exceeded'
   | 'provider_api_failure';
 
 export class PasswordResetEmailError extends Error {
@@ -21,7 +27,7 @@ const hasValue = (value: string | undefined): boolean => Boolean(value?.trim());
 
 /** Logs only whether server-side configuration exists, never its values. */
 export function logPasswordResetEmailConfiguration(): void {
-  if (process.env.NODE_ENV !== 'development') return;
+  if (process.env.NODE_ENV === 'test') return;
 
   console.info(
     `[Password reset email] Resend configuration: RESEND_API_KEY=${hasValue(process.env.RESEND_API_KEY) ? 'present' : 'missing'}, PASSWORD_RESET_FROM_EMAIL=${hasValue(process.env.PASSWORD_RESET_FROM_EMAIL) ? 'present' : 'missing'}`,
@@ -53,6 +59,12 @@ function safeProviderCode(payload: unknown): string | undefined {
     'validation_error',
     'rate_limit_exceeded',
     'internal_server_error',
+    'not_found',
+    'forbidden',
+    'method_not_allowed',
+    'daily_quota_exceeded',
+    'sender_restriction',
+    'recipient_restriction',
   ]);
   return knownCodes.has(normalized) ? normalized : undefined;
 }
@@ -61,8 +73,15 @@ function safeProviderCode(payload: unknown): string | undefined {
 export async function sendPasswordResetEmail(email: string, resetLink: string): Promise<void> {
   const apiKey = process.env.RESEND_API_KEY?.trim();
   const from = process.env.PASSWORD_RESET_FROM_EMAIL?.trim();
-  if (!apiKey || !from) {
+
+  if (!apiKey && !from) {
     throw new PasswordResetEmailError('missing_configuration');
+  }
+  if (!apiKey) {
+    throw new PasswordResetEmailError('missing_api_key');
+  }
+  if (!from) {
+    throw new PasswordResetEmailError('missing_from_email');
   }
 
   let response: Response;
@@ -91,14 +110,41 @@ export async function sendPasswordResetEmail(email: string, resetLink: string): 
     const message = payload && typeof payload === 'object' && 'message' in payload && typeof payload.message === 'string'
       ? payload.message
       : '';
-    const senderRestriction = response.status === 403 && /sender|domain|verify|testing email|only send/i.test(message);
 
-    if (response.status === 401 || /invalid_api_key|restricted_api_key/i.test(providerCode || '')) {
+    if (
+      response.status === 401 ||
+      /invalid_api_key|restricted_api_key|missing_api_key/i.test(providerCode || '') ||
+      (response.status === 403 && /api key|unauthorized|forbidden|credentials/i.test(message) && !/domain|sender|verify|recipient|testing/i.test(message))
+    ) {
       throw new PasswordResetEmailError('invalid_api_key', response.status, providerCode);
     }
-    if (senderRestriction) {
+
+    if (
+      response.status === 429 ||
+      providerCode === 'rate_limit_exceeded' ||
+      /rate limit|too many requests/i.test(message)
+    ) {
+      throw new PasswordResetEmailError('rate_limit_exceeded', response.status, providerCode);
+    }
+
+    const isRecipientRestriction =
+      /testing email|only send to|permitted recipient|recipient.*(restricted|not allowed|suppressed)|own email address|send to.*your own/i.test(message) ||
+      /recipient_restriction/i.test(providerCode || '');
+
+    if (isRecipientRestriction) {
+      throw new PasswordResetEmailError('recipient_restriction', response.status, providerCode);
+    }
+
+    const isSenderRestriction =
+      /domain.*not (verified|registered)|sender.*(not verified|not allowed)|from.*not (verified|valid)|verify.*domain/i.test(message) ||
+      (response.status === 403 && /sender|domain|verify/i.test(message)) ||
+      /sender_restriction|domain_not_verified/i.test(providerCode || '');
+
+    if (isSenderRestriction) {
       throw new PasswordResetEmailError('sender_restriction', response.status, providerCode);
     }
+
     throw new PasswordResetEmailError('provider_api_failure', response.status, providerCode);
   }
 }
+

@@ -22,7 +22,8 @@ async function handleResponse<T>(res: Response): Promise<T> {
  * Registers a new user account with credentials: 'include' so session cookie is saved.
  */
 export async function registerApi(data: CreateUserInput): Promise<SafeUser> {
-  const res = await fetch('/api/auth/register', {
+  const baseUrl = getApiBaseUrl();
+  const res = await fetch(`${baseUrl}/api/auth/register`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
@@ -37,7 +38,8 @@ export async function registerApi(data: CreateUserInput): Promise<SafeUser> {
  * Logs in with email and password, setting the session cookie.
  */
 export async function loginApi(data: LoginInput): Promise<SafeUser> {
-  const res = await fetch('/api/auth/login', {
+  const baseUrl = getApiBaseUrl();
+  const res = await fetch(`${baseUrl}/api/auth/login`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
@@ -52,7 +54,8 @@ export async function loginApi(data: LoginInput): Promise<SafeUser> {
  * Logs out the current session and clears the auth cookie.
  */
 export async function logoutApi(): Promise<void> {
-  const res = await fetch('/api/auth/logout', {
+  const baseUrl = getApiBaseUrl();
+  const res = await fetch(`${baseUrl}/api/auth/logout`, {
     method: 'POST',
     credentials: 'include',
   });
@@ -67,7 +70,8 @@ export async function logoutApi(): Promise<void> {
  */
 export async function getCurrentUserApi(): Promise<SafeUser | null> {
   try {
-    const res = await fetch('/api/auth/me', {
+    const baseUrl = getApiBaseUrl();
+    const res = await fetch(`${baseUrl}/api/auth/me`, {
       method: 'GET',
       credentials: 'include',
     });
@@ -88,7 +92,8 @@ export async function getCurrentUserApi(): Promise<SafeUser | null> {
  * Returns a generic response so the account's existence is not disclosed.
  */
 export async function forgotPasswordApi(data: ForgotPasswordInput): Promise<{ message: string }> {
-  const res = await fetch('/api/auth/forgot-password', {
+  const baseUrl = getApiBaseUrl();
+  const res = await fetch(`${baseUrl}/api/auth/forgot-password`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
@@ -102,7 +107,8 @@ export async function forgotPasswordApi(data: ForgotPasswordInput): Promise<{ me
  * Resets the user's password using a valid reset token.
  */
 export async function resetPasswordApi(data: ResetPasswordInput): Promise<{ message: string }> {
-  const res = await fetch('/api/auth/reset-password', {
+  const baseUrl = getApiBaseUrl();
+  const res = await fetch(`${baseUrl}/api/auth/reset-password`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
