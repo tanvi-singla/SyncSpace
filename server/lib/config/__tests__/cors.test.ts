@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import {
   getAllowedConfiguredOrigins,
+  getCanonicalFrontendUrl,
   isPrivateOrLocalhost,
   isOriginAllowed,
   corsOptions,
@@ -32,7 +33,7 @@ describe('CORS Origin Validation', () => {
   });
 
   describe('Configured Origins Parsing', () => {
-    it('returns empty list when no env vars are defined', () => {
+    it('returns empty list when no env vars are defined in non-production', () => {
       expect(getAllowedConfiguredOrigins()).toEqual([]);
     });
 
@@ -57,11 +58,59 @@ describe('CORS Origin Validation', () => {
       expect(origins).toHaveLength(3);
     });
 
-    it('deduplicates identical origins across CLIENT_URL and FRONTEND_URL', () => {
-      process.env.CLIENT_URL = 'https://syncspace.onrender.com/';
-      process.env.FRONTEND_URL = 'https://syncspace.onrender.com';
+    it('automatically ensures both www.sync-space.me and apex sync-space.me are trusted', () => {
+      process.env.FRONTEND_URL = 'https://sync-space.me';
+      const origins = getAllowedConfiguredOrigins();
+      expect(origins).toContain('https://www.sync-space.me');
+      expect(origins).toContain('https://sync-space.me');
+    });
 
-      expect(getAllowedConfiguredOrigins()).toEqual(['https://syncspace.onrender.com']);
+    it('trusts sync-space.me domains in production by default', () => {
+      process.env.NODE_ENV = 'production';
+      const origins = getAllowedConfiguredOrigins();
+      expect(origins).toContain('https://www.sync-space.me');
+      expect(origins).toContain('https://sync-space.me');
+    });
+  });
+
+  describe('Canonical Frontend URL Resolution (getCanonicalFrontendUrl)', () => {
+    it('canonicalizes apex sync-space.me to https://www.sync-space.me', () => {
+      process.env.FRONTEND_URL = 'https://sync-space.me';
+      expect(getCanonicalFrontendUrl()).toBe('https://www.sync-space.me');
+
+      process.env.FRONTEND_URL = 'http://sync-space.me/';
+      expect(getCanonicalFrontendUrl()).toBe('https://www.sync-space.me');
+    });
+
+    it('preserves already canonical https://www.sync-space.me', () => {
+      process.env.FRONTEND_URL = 'https://www.sync-space.me';
+      expect(getCanonicalFrontendUrl()).toBe('https://www.sync-space.me');
+    });
+
+    it('canonicalizes from comma-separated origins list', () => {
+      process.env.FRONTEND_URL = 'https://sync-space.me, https://app.sync-space.me';
+      expect(getCanonicalFrontendUrl()).toBe('https://www.sync-space.me');
+    });
+
+    it('preserves custom developer domain in test/dev', () => {
+      process.env.FRONTEND_URL = 'https://syncspace.example.test';
+      expect(getCanonicalFrontendUrl()).toBe('https://syncspace.example.test');
+    });
+
+    it('defaults to https://www.sync-space.me in production when unset', () => {
+      process.env.NODE_ENV = 'production';
+      delete process.env.FRONTEND_URL;
+      delete process.env.CLIENT_URL;
+
+      expect(getCanonicalFrontendUrl()).toBe('https://www.sync-space.me');
+    });
+
+    it('defaults to http://localhost:5173 in development when unset', () => {
+      process.env.NODE_ENV = 'development';
+      delete process.env.FRONTEND_URL;
+      delete process.env.CLIENT_URL;
+
+      expect(getCanonicalFrontendUrl()).toBe('http://localhost:5173');
     });
   });
 

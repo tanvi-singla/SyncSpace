@@ -5,6 +5,8 @@ import { resetPasswordApi } from '../lib/api/auth';
 import { useAuth } from '../context/AuthContext';
 import { Layers, Loader2, AlertCircle, CheckCircle, Eye, EyeOff, Lock, ArrowLeft } from 'lucide-react';
 
+const SESSION_TOKEN_KEY = 'syncspace_reset_token';
+
 export function ResetPassword() {
   const [password, setPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
@@ -22,22 +24,47 @@ export function ResetPassword() {
   const location = useLocation();
   const { logout } = useAuth();
 
-  // Extract token from URL on mount
+  const clearSessionToken = () => {
+    if (typeof window !== 'undefined') {
+      try {
+        sessionStorage.removeItem(SESSION_TOKEN_KEY);
+      } catch {
+        // Ignore storage access errors
+      }
+    }
+  };
+
+  // Extract token from URL on mount or fallback to sessionStorage on page refresh
   useEffect(() => {
     const searchParams = new URLSearchParams(location.search);
     const fragmentParams = new URLSearchParams(location.hash.replace(/^#/, ''));
-    const tokenParam = fragmentParams.get('token') || searchParams.get('token');
+    let tokenParam = fragmentParams.get('token') || searchParams.get('token');
+
+    // On page refresh, URL search or hash might be empty if the browser didn't preserve it.
+    // Check sessionStorage as a reliable fallback.
+    if (!tokenParam && typeof window !== 'undefined') {
+      try {
+        const stored = sessionStorage.getItem(SESSION_TOKEN_KEY);
+        if (stored && stored.trim().length > 0) {
+          tokenParam = stored.trim();
+        }
+      } catch {
+        // Ignore storage access errors
+      }
+    }
+
     if (!tokenParam) {
       setIsTokenValid(false);
       setError('This reset link is invalid, expired, or already used. Please request a new password reset.');
     } else {
       setToken(tokenParam);
-      // Keep the single-use token out of browser history after the page has read it.
-      if (fragmentParams.has('token') || searchParams.has('token')) {
-        const cleanSearch = new URLSearchParams(location.search);
-        cleanSearch.delete('token');
-        const cleanQuery = cleanSearch.toString();
-        window.history.replaceState(null, '', `${location.pathname}${cleanQuery ? `?${cleanQuery}` : ''}`);
+      setIsTokenValid(true);
+      if (typeof window !== 'undefined') {
+        try {
+          sessionStorage.setItem(SESSION_TOKEN_KEY, tokenParam);
+        } catch {
+          // Ignore storage access errors
+        }
       }
     }
   }, [location.hash, location.pathname, location.search]);
@@ -103,6 +130,14 @@ export function ResetPassword() {
       });
       // Clear any in-memory client session as well as the invalidated server cookie.
       await logout();
+      clearSessionToken();
+      if (typeof window !== 'undefined' && window.location.hash) {
+        try {
+          window.history.replaceState(null, '', window.location.pathname);
+        } catch {
+          // Ignore
+        }
+      }
       setIsSuccess(true);
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : 'Failed to reset password';
@@ -179,6 +214,7 @@ export function ResetPassword() {
             {/* Button to request new link */}
             <Link
               to="/forgot-password"
+              onClick={clearSessionToken}
               className="w-full flex items-center justify-center py-2.5 px-4 rounded-xl shadow-sm text-sm font-semibold text-white bg-primary-600 hover:bg-primary-700 focus:outline-none focus:ring-4 focus:ring-primary-100 transition-all"
             >
               Request new reset link
@@ -186,7 +222,11 @@ export function ResetPassword() {
 
             {/* Footer Link to Login */}
             <div className="text-center pt-2">
-              <Link to="/login" className="inline-flex items-center text-sm text-workspace-500 hover:text-workspace-700 transition-colors">
+              <Link 
+                to="/login" 
+                onClick={clearSessionToken}
+                className="inline-flex items-center text-sm text-workspace-500 hover:text-workspace-700 transition-colors"
+              >
                 <ArrowLeft size={16} className="mr-1" />
                 Back to Sign In
               </Link>
@@ -391,6 +431,7 @@ export function ResetPassword() {
             <div className="space-y-4">
               <Link
                 to="/login"
+                onClick={clearSessionToken}
                 className="w-full flex items-center justify-center py-2.5 px-4 rounded-xl shadow-sm text-sm font-semibold text-white bg-primary-600 hover:bg-primary-700 focus:outline-none focus:ring-4 focus:ring-primary-100 transition-all"
               >
                 Sign in with new password
@@ -400,7 +441,11 @@ export function ResetPassword() {
 
           {/* Footer Link to Login */}
           <div className="text-center pt-2">
-            <Link to="/login" className="inline-flex items-center text-sm text-workspace-500 hover:text-workspace-700 transition-colors">
+            <Link 
+              to="/login" 
+              onClick={clearSessionToken}
+              className="inline-flex items-center text-sm text-workspace-500 hover:text-workspace-700 transition-colors"
+            >
               <ArrowLeft size={16} className="mr-1" />
               Back to Sign In
             </Link>

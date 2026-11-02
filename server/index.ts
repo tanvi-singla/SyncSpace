@@ -1,11 +1,14 @@
 import './lib/config/env';
 import http from 'http';
+import { existsSync } from 'node:fs';
+import { resolve } from 'node:path';
 import express from 'express';
 import type { Request, Response, NextFunction } from 'express';
 import cookieParser from 'cookie-parser';
 import cors from 'cors';
 import { corsOptions } from './lib/config/cors';
 import { getJwtSecret } from './lib/auth/jwt';
+import { apexDomainRedirect, createSpaFallbackMiddleware } from './lib/config/spa';
 import { authRouter } from './routes/auth';
 import { documentsRouter } from './routes/documents';
 import { createYjsServer, setupAuthorizedWSConnection } from './yjsServer';
@@ -15,6 +18,9 @@ import { logPasswordResetEmailConfiguration } from './lib/auth/email';
 logPasswordResetEmailConfiguration();
 
 const app = express();
+
+// Canonical apex to www redirect for custom production domain
+app.use(apexDomainRedirect);
 
 // Secure CORS configuration: rejects untrusted origins while supporting credentials and configured origins
 app.use(cors(corsOptions));
@@ -33,6 +39,13 @@ app.use('/api/auth', authRouter);
 
 // Mount document routes (protected by requireAuth inside the router)
 app.use('/api/documents', documentsRouter);
+
+// Static frontend serving and client-side SPA route fallback when dist directory exists
+const distPath = resolve(process.cwd(), 'dist');
+if (existsSync(distPath)) {
+  app.use(express.static(distPath));
+  app.use(createSpaFallbackMiddleware(distPath));
+}
 
 // Global unhandled error middleware
 app.use((err: unknown, _req: Request, res: Response, _next: NextFunction) => {

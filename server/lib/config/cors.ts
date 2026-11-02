@@ -21,7 +21,46 @@ export function getAllowedConfiguredOrigins(): string[] {
     }
   }
 
+  // Ensure both canonical www.sync-space.me and apex sync-space.me are trusted
+  if (origins.some((o) => o.includes('sync-space.me')) || process.env.NODE_ENV === 'production') {
+    if (!origins.includes('https://www.sync-space.me')) origins.push('https://www.sync-space.me');
+    if (!origins.includes('https://sync-space.me')) origins.push('https://sync-space.me');
+  }
+
   return origins;
+}
+
+/**
+ * Resolves the canonical frontend URL for user-facing links (e.g. password reset emails).
+ * - Normalizes sync-space.me to the canonical https://www.sync-space.me
+ * - In production, defaults to https://www.sync-space.me if unset
+ * - In development, defaults to configured FRONTEND_URL/CLIENT_URL or http://localhost:5173
+ */
+export function getCanonicalFrontendUrl(): string {
+  const envUrl = process.env.FRONTEND_URL || process.env.CLIENT_URL;
+
+  if (envUrl && typeof envUrl === 'string' && envUrl.trim().length > 0) {
+    const candidates = envUrl.split(',').map((u) => u.trim().replace(/\/+$/, '')).filter(Boolean);
+    for (const candidate of candidates) {
+      try {
+        const parsed = new URL(candidate);
+        // Canonicalize sync-space.me apex to www.sync-space.me
+        if (parsed.hostname === 'sync-space.me') {
+          parsed.hostname = 'www.sync-space.me';
+          parsed.protocol = 'https:';
+        }
+        return parsed.origin;
+      } catch {
+        // Continue to next candidate
+      }
+    }
+  }
+
+  if (process.env.NODE_ENV === 'production') {
+    return 'https://www.sync-space.me';
+  }
+
+  return 'http://localhost:5173';
 }
 
 /**

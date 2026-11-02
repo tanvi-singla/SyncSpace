@@ -16,6 +16,7 @@ import {
   resolveOAuthIdentity, safeOAuthReturnPath,
 } from '../lib/auth/oauth';
 import type { OAuthProvider } from '../lib/auth/oauth';
+import { getCanonicalFrontendUrl } from '../lib/config/cors';
 
 const router = Router();
 const OAUTH_COOKIE = 'oauth_transaction';
@@ -293,9 +294,7 @@ router.post('/forgot-password', async (req: Request, res: Response): Promise<voi
         });
 
         try {
-          const frontendUrl = process.env.FRONTEND_URL || process.env.CLIENT_URL ||
-            (process.env.NODE_ENV === 'production' ? '' : 'http://localhost:5173');
-          if (!frontendUrl) throw new PasswordResetEmailError('missing_configuration');
+          const frontendUrl = getCanonicalFrontendUrl();
           const resetUrl = new URL('/reset-password', frontendUrl);
           resetUrl.hash = new URLSearchParams({ token }).toString();
           await sendPasswordResetEmail(user.email, resetUrl.toString());
