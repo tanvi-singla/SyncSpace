@@ -2,6 +2,7 @@ import type { IncomingMessage } from 'http';
 import { verifyToken, AUTH_COOKIE_NAME } from '../auth/jwt';
 import { prisma } from '../db/client';
 import { parseRoomName, type ParsedRoom } from '../../../src/lib/yjs/rooms';
+import { isOriginAllowed } from '../config/cors';
 
 export type UserRole = 'OWNER' | 'EDITOR' | 'VIEWER';
 
@@ -46,8 +47,18 @@ export function extractAuthToken(req: IncomingMessage, url: URL): string | null 
 }
 
 /**
+ * Verifies whether an incoming HTTP/WebSocket upgrade request Origin is allowed.
+ * Permitted if no Origin header is present (non-browser clients) or if the origin is authorized.
+ */
+export function verifyWebSocketOrigin(req: IncomingMessage): boolean {
+  const originHeader = req.headers.origin;
+  const origin = Array.isArray(originHeader) ? originHeader[0] : originHeader;
+  return isOriginAllowed(origin);
+}
+
+/**
  * Authorizes an incoming WebSocket connection for a given room.
- * Enforces OWNER, EDITOR, and VIEWER permissions.
+ * Enforces Origin validation, JWT verification, and OWNER, EDITOR, and VIEWER permissions.
  */
 export async function authorizeYjsConnection(
   req: IncomingMessage,
@@ -55,6 +66,16 @@ export async function authorizeYjsConnection(
   url: URL
 ): Promise<YjsAuthResult> {
   const parsedRoom = parseRoomName(rawRoomName);
+
+  // 0. Enforce WebSocket Origin validation
+  if (!verifyWebSocketOrigin(req)) {
+    return {
+      authorized: false,
+      status: 403,
+      reason: 'Origin not allowed',
+      parsedRoom,
+    };
+  }
 
   // Allow disabling auth check explicitly via env for mock test environments
   if (process.env.YJS_AUTH_REQUIRED === 'false') {

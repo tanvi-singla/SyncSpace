@@ -4,40 +4,20 @@ import express from 'express';
 import type { Request, Response, NextFunction } from 'express';
 import cookieParser from 'cookie-parser';
 import cors from 'cors';
+import { corsOptions } from './lib/config/cors';
+import { getJwtSecret } from './lib/auth/jwt';
 import { authRouter } from './routes/auth';
 import { documentsRouter } from './routes/documents';
 import { createYjsServer, setupAuthorizedWSConnection } from './yjsServer';
-import { authorizeYjsConnection } from './lib/yjs/auth';
+import { authorizeYjsConnection, verifyWebSocketOrigin } from './lib/yjs/auth';
 import { logPasswordResetEmailConfiguration } from './lib/auth/email';
 
 logPasswordResetEmailConfiguration();
 
 const app = express();
 
-// CORS configuration for local, LAN, and production Vite clients
-const allowedOrigins = [
-  process.env.CLIENT_URL,
-  process.env.FRONTEND_URL,
-  'http://localhost:5173',
-  'http://127.0.0.1:5173',
-].filter((url): url is string => typeof url === 'string' && url.length > 0);
-
-app.use(
-  cors({
-    origin: (origin, callback) => {
-      // Allow requests with no origin (mobile apps, curl, server-to-server)
-      if (!origin) return callback(null, true);
-      if (
-        allowedOrigins.includes(origin) ||
-        /^http:\/\/(localhost|127\.0\.0\.1|172\.\d+\.\d+\.\d+|192\.168\.\d+\.\d+|10\.\d+\.\d+\.\d+)(:\d+)?$/.test(origin)
-      ) {
-        return callback(null, true);
-      }
-      return callback(null, true);
-    },
-    credentials: true,
-  })
-);
+// Secure CORS configuration: rejects untrusted origins while supporting credentials and configured origins
+app.use(cors(corsOptions));
 
 // Standard body and cookie parsers
 app.use(express.json());
@@ -69,11 +49,21 @@ const PORT = parseInt(process.env.PORT || '5000', 10);
 const HOST = process.env.HOST || '0.0.0.0';
 
 if (process.env.NODE_ENV !== 'test') {
+  // Validate JWT configuration before starting HTTP server (fails fast in production if missing/insecure)
+  getJwtSecret();
+
   const httpServer = http.createServer(app);
   const { wss } = createYjsServer();
 
   httpServer.on('upgrade', async (req, socket, head) => {
     try {
+      // 1. Verify WebSocket Origin before completing upgrade
+      if (!verifyWebSocketOrigin(req)) {
+        socket.write('HTTP/1.1 403 Forbidden\r\nContent-Type: text/plain\r\n\r\nOrigin not allowed');
+        socket.destroy();
+        return;
+      }
+
       const url = new URL(req.url || '/', `http://${req.headers.host || 'localhost'}`);
       const rawRoomName = decodeURIComponent(url.pathname.slice(1).split('?')[0]);
 
