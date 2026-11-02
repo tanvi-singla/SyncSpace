@@ -102,6 +102,83 @@ DATABASE_URL="postgresql://postgres:postgres@localhost:5432/syncspace?schema=pub
 
 Do not run `docker compose down -v` when preserving local data.
 
+## Google and GitHub sign-in (Phase 2B)
+
+OAuth credentials are backend-only. Never add provider secrets to `VITE_*` variables.
+Before enabling sign-in, apply the tracked schema migration with
+`npx prisma migrate deploy` and regenerate the Prisma client with `npm run prisma:generate`.
+
+### Google developer console
+
+Create an OAuth client ID in Google Cloud Console with application type **Web
+application**. Add the server callback as an authorized redirect URI:
+
+```text
+http://localhost:5000/api/auth/google/callback
+https://YOUR_API_HOST/api/auth/google/callback
+```
+
+Use the credentials only in the Express server environment:
+
+```dotenv
+OAUTH_GOOGLE_CLIENT_ID=your-google-client-id
+OAUTH_GOOGLE_CLIENT_SECRET=your-google-client-secret
+OAUTH_CALLBACK_BASE_URL=http://localhost:5000
+OAUTH_FRONTEND_URL=http://localhost:5173
+OAUTH_STATE_SECRET=replace-with-at-least-32-random-characters
+```
+
+### GitHub developer settings
+
+Create an OAuth App under GitHub **Settings → Developer settings → OAuth Apps**.
+Set its Authorization callback URL to:
+
+```text
+http://localhost:5000/api/auth/github/callback
+https://YOUR_API_HOST/api/auth/github/callback
+```
+
+Set its Homepage URL to the SyncSpace frontend origin, then provide:
+
+```dotenv
+OAUTH_GITHUB_CLIENT_ID=your-github-client-id
+OAUTH_GITHUB_CLIENT_SECRET=your-github-client-secret
+OAUTH_CALLBACK_BASE_URL=http://localhost:5000
+OAUTH_FRONTEND_URL=http://localhost:5173
+OAUTH_STATE_SECRET=replace-with-at-least-32-random-characters
+```
+
+For production, set `OAUTH_CALLBACK_BASE_URL` to the HTTPS origin serving Express
+and `OAUTH_FRONTEND_URL` to the HTTPS frontend origin. Register the corresponding
+exact callback URI in both provider consoles. If `OAUTH_FRONTEND_URL` is omitted,
+the backend falls back to `FRONTEND_URL` or `CLIENT_URL`; callback origin defaults
+to `http://localhost:5000` only for local development. If the frontend and API use
+different hosts, set `VITE_API_URL` to the API origin so the buttons reach Express.
+Set a unique, randomly generated `OAUTH_STATE_SECRET` of at least 32 characters
+in production (or ensure the existing `JWT_SECRET` meets that requirement).
+
+OAuth uses authorization code flow with state and PKCE. Google OIDC identity and
+verified email are validated by `openid-client`; GitHub identity comes from its
+authenticated profile API and email from a verified primary email. The account
+linking policy is intentionally explicit: existing accounts with the same email
+are not linked automatically; users must authenticate through the existing method.
+OAuth-created users have no local password initially and can use the existing
+forgot-password flow to set one after email verification. Password login safely
+rejects accounts that do not yet have a local password.
+
+### Manual verification
+
+1. Apply the migration, set local OAuth credentials, and start Express, Vite, and
+   PostgreSQL.
+2. Open `/register` and confirm both provider buttons preserve the existing form.
+3. Complete Google and GitHub sign-in; confirm each returns to the app signed in.
+4. Cancel provider consent, alter/remove the callback `state`, and retry a stale
+   callback; each should return to `/login` with a useful error and no session.
+5. Try a provider identity whose email already belongs to a password account;
+   confirm the app asks the user to sign in normally and does not link it.
+6. Sign out, sign back in with the same provider, and confirm the same local user
+   is used. Test forgot-password for the OAuth-created account and set a password.
+
 ---
 
 ## 👥 Real-Time Peer Sync Testing

@@ -6,7 +6,7 @@ import type { CreateUserInput, LoginInput } from '../lib/validation/auth';
 export interface User {
   id: string;
   email: string;
-  passwordHash: string;
+  passwordHash: string | null;
   name: string;
   avatarUrl: string | null;
   createdAt: Date | string;

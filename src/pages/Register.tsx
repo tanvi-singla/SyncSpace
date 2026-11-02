@@ -3,6 +3,7 @@ import { useNavigate, Link } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import { registerSchema } from '../lib/validation/auth';
 import { Layers, Loader2, AlertCircle, Eye, EyeOff, Lock, Mail, User as UserIcon, Check, X } from 'lucide-react';
+import { OAuthButtons } from '../components/auth/OAuthButtons';
 
 export function Register() {
   const [name, setName] = useState('');
@@ -153,6 +154,13 @@ export function Register() {
               <div className="text-sm font-medium">{error}</div>
             </div>
           )}
+
+          <OAuthButtons />
+          <div className="relative flex items-center" aria-hidden="true">
+            <div className="flex-grow border-t border-workspace-200" />
+            <span className="mx-4 text-xs font-medium text-workspace-400">OR SIGN UP WITH EMAIL</span>
+            <div className="flex-grow border-t border-workspace-200" />
+          </div>
 
           {/* Form */}
           <form className="space-y-4" onSubmit={handleSubmit} noValidate>

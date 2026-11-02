@@ -10,7 +10,7 @@ datasource db {
 model User {
   id                  String               @id @default(uuid())
   email               String               @unique
-  passwordHash        String               @map("password_hash")
+  passwordHash        String?              @map("password_hash")
   authVersion         Int                  @default(0) @map("auth_version")
   name                String
   avatarUrl           String?              @map("avatar_url")
@@ -19,9 +19,23 @@ model User {
   documentShares      DocumentShare[]
   documents           Document[]
   passwordResetTokens PasswordResetToken[]
+  providerAccounts    ProviderAccount[]
 
   @@index([email])
   @@map("users")
+}
+
+model ProviderAccount {
+  id                String   @id @default(uuid())
+  userId            String   @map("user_id")
+  provider          String
+  providerAccountId String   @map("provider_account_id")
+  createdAt         DateTime @default(now()) @map("created_at")
+  user              User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([provider, providerAccountId])
+  @@index([userId])
+  @@map("provider_accounts")
 }
 
 model PasswordResetToken {

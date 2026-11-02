@@ -9,8 +9,126 @@ import { toSafeUser } from '../../src/types/auth';
 import { generateResetToken, verifyResetToken, hashResetToken, calculateResetTokenExpiry } from '../lib/auth/tokens';
 import { logPasswordResetEmailFailure, sendPasswordResetEmail, PasswordResetEmailError } from '../lib/auth/email';
 import { revokeUserConnections } from '../lib/yjs/sessionConnections';
+import * as oidc from 'openid-client';
+import { createHmac, timingSafeEqual } from 'node:crypto';
+import {
+  findOrCreateOAuthUser, getOAuthCallbackUrl, getOAuthConfiguration, getOAuthFrontendUrl,
+  resolveOAuthIdentity, safeOAuthReturnPath,
+} from '../lib/auth/oauth';
+import type { OAuthProvider } from '../lib/auth/oauth';
 
 const router = Router();
+const OAUTH_COOKIE = 'oauth_transaction';
+const OAUTH_COOKIE_MAX_AGE = 10 * 60 * 1000;
+type OAuthTransaction = { provider: OAuthProvider; state: string; verifier: string; nonce?: string; returnPath: string };
+
+function oauthTransactionSecret(): string {
+  const secret = process.env.OAUTH_STATE_SECRET || process.env.JWT_SECRET || 'syncspace-dev-secret-change-in-prod';
+  if (process.env.NODE_ENV === 'production' && secret.length < 32) throw new Error('oauth_state_secret_too_short');
+  return secret;
+}
+
+function encodeOAuthTransaction(transaction: OAuthTransaction): string {
+  const payload = Buffer.from(JSON.stringify(transaction)).toString('base64url');
+  const signature = createHmac('sha256', oauthTransactionSecret()).update(payload).digest('base64url');
+  return `${payload}.${signature}`;
+}
+
+function decodeOAuthTransaction(value: string): OAuthTransaction | null {
+  const [payload, signature, extra] = value.split('.');
+  if (!payload || !signature || extra) return null;
+  const expected = createHmac('sha256', oauthTransactionSecret()).update(payload).digest();
+  let provided: Buffer;
+  try { provided = Buffer.from(signature, 'base64url'); } catch { return null; }
+  if (provided.length !== expected.length || !timingSafeEqual(provided, expected)) return null;
+  try { return JSON.parse(Buffer.from(payload, 'base64url').toString('utf8')) as OAuthTransaction; } catch { return null; }
+}
+
+function clearOAuthTransaction(res: Response): void {
+  res.clearCookie(OAUTH_COOKIE, { httpOnly: true, secure: process.env.NODE_ENV === 'production', sameSite: 'lax', path: '/api/auth' });
+}
+
+function oauthFailure(res: Response, code = 'oauth_failed'): void {
+  clearOAuthTransaction(res);
+  try {
+    const target = new URL('/login', getOAuthFrontendUrl());
+    target.searchParams.set('oauth_error', code);
+    res.redirect(303, target.toString());
+  } catch {
+    res.status(400).json({ error: 'OAuth sign-in could not be completed.' });
+  }
+}
+
+for (const provider of ['google', 'github'] as const) {
+  router.get(`/${provider}`, async (req: Request, res: Response): Promise<void> => {
+    try {
+      const configuration = await getOAuthConfiguration(provider);
+      const state = oidc.randomState();
+      const verifier = oidc.randomPKCECodeVerifier();
+      const nonce = provider === 'google' ? oidc.randomNonce() : undefined;
+      const challenge = await oidc.calculatePKCECodeChallenge(verifier);
+      const transaction: OAuthTransaction = {
+        provider, state, verifier, ...(nonce ? { nonce } : {}),
+        returnPath: safeOAuthReturnPath(req.query.next),
+      };
+      res.cookie(OAUTH_COOKIE, encodeOAuthTransaction(transaction), {
+        httpOnly: true,
+        secure: process.env.NODE_ENV === 'production',
+        sameSite: 'lax',
+        maxAge: OAUTH_COOKIE_MAX_AGE,
+        path: '/api/auth',
+      });
+      const parameters: Record<string, string> = {
+        redirect_uri: getOAuthCallbackUrl(provider),
+        scope: provider === 'google' ? 'openid email profile' : 'read:user user:email',
+        state,
+        code_challenge: challenge,
+        code_challenge_method: 'S256',
+      };
+      if (nonce) parameters.nonce = nonce;
+      res.redirect(302, oidc.buildAuthorizationUrl(configuration, parameters).toString());
+    } catch (error) {
+      console.error(`OAuth ${provider} initiation failed:`, error instanceof Error ? error.message : 'unknown error');
+      oauthFailure(res, 'provider_unavailable');
+    }
+  });
+
+  router.get(`/${provider}/callback`, async (req: Request, res: Response): Promise<void> => {
+    try {
+      const raw = req.cookies?.[OAUTH_COOKIE];
+      if (!raw) return oauthFailure(res, 'invalid_state');
+      const transaction = decodeOAuthTransaction(raw);
+      if (!transaction) return oauthFailure(res, 'invalid_state');
+      if (transaction.provider !== provider || !transaction.state || !transaction.verifier ||
+          typeof req.query.state !== 'string' || req.query.state !== transaction.state) {
+        return oauthFailure(res, 'invalid_state');
+      }
+      if (req.query.error) return oauthFailure(res, req.query.error === 'access_denied' ? 'cancelled' : 'oauth_failed');
+
+      const configuration = await getOAuthConfiguration(provider);
+      const callbackUrl = new URL(getOAuthCallbackUrl(provider));
+      for (const [key, value] of Object.entries(req.query)) {
+        if (typeof value === 'string') callbackUrl.searchParams.set(key, value);
+      }
+      const tokens = await oidc.authorizationCodeGrant(configuration, callbackUrl, {
+        expectedState: transaction.state,
+        pkceCodeVerifier: transaction.verifier,
+        ...(transaction.nonce ? { expectedNonce: transaction.nonce } : {}),
+      }, { redirect_uri: getOAuthCallbackUrl(provider) });
+      const identity = await resolveOAuthIdentity(provider, tokens.access_token, tokens.claims());
+      const user = await findOrCreateOAuthUser(provider, identity);
+      const token = signToken({ userId: user.id, email: user.email, authVersion: user.authVersion });
+      clearOAuthTransaction(res);
+      setAuthCookie(res, token);
+      const target = new URL(transaction.returnPath, getOAuthFrontendUrl());
+      res.redirect(303, target.toString());
+    } catch (error) {
+      const code = error instanceof Error && error.message === 'oauth_account_exists' ? 'account_exists' : 'oauth_failed';
+      console.error(`OAuth ${provider} callback failed:`, error instanceof Error ? error.message : 'unknown error');
+      oauthFailure(res, code);
+    }
+  });
+}
 
 /**
  * POST /api/auth/register
@@ -81,7 +199,7 @@ router.post('/login', async (req: Request, res: Response): Promise<void> => {
       return;
     }
 
-    const isMatch = await verifyPassword(password, user.passwordHash);
+    const isMatch = user.passwordHash ? await verifyPassword(password, user.passwordHash) : false;
     if (!isMatch) {
       res.status(401).json({ error: 'Invalid email or password' });
       return;

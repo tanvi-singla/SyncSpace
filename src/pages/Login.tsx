@@ -3,6 +3,7 @@ import { useNavigate, useLocation, Link } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import { loginSchema } from '../lib/validation/auth';
 import { Layers, Loader2, AlertCircle, Eye, EyeOff, Lock, Mail } from 'lucide-react';
+import { OAuthButtons } from '../components/auth/OAuthButtons';
 
 export function Login() {
   const [email, setEmail] = useState('');
@@ -18,6 +19,11 @@ export function Login() {
   const location = useLocation();
 
   const from = (location.state as { from?: { pathname: string } })?.from?.pathname || '/dashboard';
+  const oauthError = new URLSearchParams(location.search).get('oauth_error');
+  const oauthErrorMessage = oauthError === 'cancelled' ? 'Sign-in was cancelled.'
+    : oauthError === 'account_exists' ? 'An account already uses this email. Sign in with your password first; accounts are never linked automatically.'
+    : oauthError === 'invalid_state' ? 'This sign-in request expired or could not be verified. Please try again.'
+    : oauthError ? 'Sign-in could not be completed. Please try again.' : null;
 
   // Redirect if already authenticated
   useEffect(() => {
@@ -138,6 +144,19 @@ export function Login() {
               <div className="text-sm font-medium">{error}</div>
             </div>
           )}
+          {oauthErrorMessage && (
+            <div className="flex items-start gap-3 p-4 rounded-xl bg-red-50/80 border border-red-200 text-red-700" role="alert">
+              <AlertCircle className="w-5 h-5 mt-0.5 text-red-500 shrink-0" />
+              <div className="text-sm font-medium">{oauthErrorMessage}</div>
+            </div>
+          )}
+
+          <OAuthButtons next={from} />
+          <div className="relative flex items-center" aria-hidden="true">
+            <div className="flex-grow border-t border-workspace-200" />
+            <span className="mx-4 text-xs font-medium text-workspace-400">OR CONTINUE WITH EMAIL</span>
+            <div className="flex-grow border-t border-workspace-200" />
+          </div>
 
           {/* Form */}
           <form className="space-y-5" onSubmit={handleSubmit} noValidate>
