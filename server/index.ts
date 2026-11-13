@@ -14,8 +14,10 @@ import { documentsRouter } from './routes/documents';
 import { createYjsServer, setupAuthorizedWSConnection } from './yjsServer';
 import { authorizeYjsConnection, verifyWebSocketOrigin } from './lib/yjs/auth';
 import { logPasswordResetEmailConfiguration } from './lib/auth/email';
+import { logOAuthConfigStatus } from './lib/auth/oauth';
 
 logPasswordResetEmailConfiguration();
+logOAuthConfigStatus();
 
 const app = express();
 

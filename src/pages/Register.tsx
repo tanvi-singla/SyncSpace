@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { useNavigate, Link } from 'react-router-dom';
+import { useNavigate, Link, useLocation } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import { registerSchema } from '../lib/validation/auth';
 import { Layers, Loader2, AlertCircle, Eye, EyeOff, Lock, Mail, User as UserIcon, Check, X } from 'lucide-react';
@@ -18,6 +18,16 @@ export function Register() {
 
   const { register, isAuthenticated, isLoading: isAuthLoading } = useAuth();
   const navigate = useNavigate();
+  const location = useLocation();
+  const oauthError = new URLSearchParams(location.search).get('oauth_error');
+  const oauthErrorMessage = oauthError === 'cancelled' ? 'Sign-in was cancelled.'
+    : oauthError === 'account_exists' ? 'An account already uses this email. Sign in with your password first; accounts are never linked automatically.'
+    : oauthError === 'invalid_state' ? 'This sign-in request expired or could not be verified. Please try again.'
+    : oauthError === 'provider_unavailable' ? (import.meta.env.DEV ? 'OAuth credentials are not configured in your .env file. Set OAUTH_GOOGLE_CLIENT_ID and OAUTH_GOOGLE_CLIENT_SECRET (or GitHub).' : 'The authentication service is temporarily unavailable or not configured. Please try again later.')
+    : oauthError === 'provider_already_linked' ? 'This provider account is already linked to another SyncSpace account.'
+    : oauthError === 'unverified_email' ? 'Your provider account email is not verified. Please verify your email with your provider or sign in with your password.'
+    : oauthError === 'oauth_failed' ? 'Sign-in could not be completed with the provider. Please try again.'
+    : oauthError ? 'Sign-in could not be completed. Please try again.' : null;
 
   // Redirect if already authenticated
   useEffect(() => {
@@ -152,6 +162,12 @@ export function Register() {
             <div className="flex items-start gap-3 p-4 rounded-xl bg-red-50/80 border border-red-200 text-red-700 animate-fadeIn">
               <AlertCircle className="w-5 h-5 mt-0.5 text-red-500 shrink-0" />
               <div className="text-sm font-medium">{error}</div>
+            </div>
+          )}
+          {oauthErrorMessage && (
+            <div className="flex items-start gap-3 p-4 rounded-xl bg-red-50/80 border border-red-200 text-red-700" role="alert">
+              <AlertCircle className="w-5 h-5 mt-0.5 text-red-500 shrink-0" />
+              <div className="text-sm font-medium">{oauthErrorMessage}</div>
             </div>
           )}
 

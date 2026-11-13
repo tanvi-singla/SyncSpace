@@ -2,7 +2,7 @@ import { Router } from 'express';
 import type { Request, Response } from 'express';
 import { prisma } from '../lib/db/client';
 import { hashPassword, verifyPassword } from '../lib/auth/password';
-import { signToken, setAuthCookie, clearAuthCookie } from '../lib/auth/jwt';
+import { signToken, setAuthCookie, clearAuthCookie, verifyToken, AUTH_COOKIE_NAME } from '../lib/auth/jwt';
 import { requireAuth } from '../middleware/auth';
 import { registerSchema, loginSchema, forgotPasswordSchema, resetPasswordSchema } from '../../src/lib/validation/auth';
 import { toSafeUser } from '../../src/types/auth';
@@ -13,7 +13,7 @@ import * as oidc from 'openid-client';
 import { createHmac, timingSafeEqual } from 'node:crypto';
 import {
   findOrCreateOAuthUser, getOAuthCallbackUrl, getOAuthConfiguration, getOAuthFrontendUrl,
-  resolveOAuthIdentity, safeOAuthReturnPath,
+  resolveOAuthIdentity, safeOAuthReturnPath, linkOAuthAccount, getUserProviders, unlinkOAuthAccount,
 } from '../lib/auth/oauth';
 import type { OAuthProvider } from '../lib/auth/oauth';
 import { getCanonicalFrontendUrl } from '../lib/config/cors';
@@ -21,7 +21,14 @@ import { getCanonicalFrontendUrl } from '../lib/config/cors';
 const router = Router();
 const OAUTH_COOKIE = 'oauth_transaction';
 const OAUTH_COOKIE_MAX_AGE = 10 * 60 * 1000;
-type OAuthTransaction = { provider: OAuthProvider; state: string; verifier: string; nonce?: string; returnPath: string };
+type OAuthTransaction = {
+  provider: OAuthProvider;
+  state: string;
+  verifier: string;
+  nonce?: string;
+  returnPath: string;
+  linkingUserId?: string;
+};
 
 function oauthTransactionSecret(): string {
   const secret = process.env.OAUTH_STATE_SECRET || process.env.JWT_SECRET || 'syncspace-dev-secret-change-in-prod';
@@ -68,9 +75,27 @@ for (const provider of ['google', 'github'] as const) {
       const verifier = oidc.randomPKCECodeVerifier();
       const nonce = provider === 'google' ? oidc.randomNonce() : undefined;
       const challenge = await oidc.calculatePKCECodeChallenge(verifier);
+
+      // Check if user is already authenticated (for safe account linking)
+      let linkingUserId: string | undefined;
+      // Account linking is only performed when explicitly requested (e.g. ?action=link from connected accounts settings)
+      if (req.query.action === 'link') {
+        const existingAuthCookie = req.cookies?.[AUTH_COOKIE_NAME];
+        if (existingAuthCookie) {
+          const verified = verifyToken(existingAuthCookie);
+          if (verified) {
+            linkingUserId = verified.userId;
+          }
+        }
+      }
+
       const transaction: OAuthTransaction = {
-        provider, state, verifier, ...(nonce ? { nonce } : {}),
+        provider,
+        state,
+        verifier,
+        ...(nonce ? { nonce } : {}),
         returnPath: safeOAuthReturnPath(req.query.next),
+        ...(linkingUserId ? { linkingUserId } : {}),
       };
       res.cookie(OAUTH_COOKIE, encodeOAuthTransaction(transaction), {
         httpOnly: true,
@@ -87,9 +112,17 @@ for (const provider of ['google', 'github'] as const) {
         code_challenge_method: 'S256',
       };
       if (nonce) parameters.nonce = nonce;
-      res.redirect(302, oidc.buildAuthorizationUrl(configuration, parameters).toString());
+      const authUrl = oidc.buildAuthorizationUrl(configuration, parameters);
+      console.log(`[OAuth Diagnostic] Initiating ${provider} authorization flow for redirect to: ${authUrl.origin}`);
+      res.redirect(302, authUrl.toString());
     } catch (error) {
-      console.error(`OAuth ${provider} initiation failed:`, error instanceof Error ? error.message : 'unknown error');
+      const errMsg = error instanceof Error ? error.message : 'unknown error';
+      if (errMsg.includes('not_configured')) {
+        console.warn(`[OAuth Diagnostic] ${provider.toUpperCase()} credentials are not configured.`);
+        console.warn(`[OAuth Diagnostic] Action required: Set OAUTH_${provider.toUpperCase()}_CLIENT_ID (or ${provider.toUpperCase()}_CLIENT_ID) and OAUTH_${provider.toUpperCase()}_CLIENT_SECRET in .env`);
+      } else {
+        console.error(`OAuth ${provider} initiation failed:`, errMsg);
+      }
       oauthFailure(res, 'provider_unavailable');
     }
   });
@@ -97,14 +130,25 @@ for (const provider of ['google', 'github'] as const) {
   router.get(`/${provider}/callback`, async (req: Request, res: Response): Promise<void> => {
     try {
       const raw = req.cookies?.[OAUTH_COOKIE];
-      if (!raw) return oauthFailure(res, 'invalid_state');
-      const transaction = decodeOAuthTransaction(raw);
-      if (!transaction) return oauthFailure(res, 'invalid_state');
-      if (transaction.provider !== provider || !transaction.state || !transaction.verifier ||
-          typeof req.query.state !== 'string' || req.query.state !== transaction.state) {
+      if (!raw) {
+        console.warn(`[OAuth Diagnostic] ${provider} callback failed: oauth_transaction state cookie missing or expired.`);
         return oauthFailure(res, 'invalid_state');
       }
-      if (req.query.error) return oauthFailure(res, req.query.error === 'access_denied' ? 'cancelled' : 'oauth_failed');
+      const transaction = decodeOAuthTransaction(raw);
+      if (!transaction) {
+        console.warn(`[OAuth Diagnostic] ${provider} callback failed: oauth_transaction cookie signature verification failed.`);
+        return oauthFailure(res, 'invalid_state');
+      }
+      if (transaction.provider !== provider || !transaction.state || !transaction.verifier ||
+          typeof req.query.state !== 'string' || req.query.state !== transaction.state) {
+        console.warn(`[OAuth Diagnostic] ${provider} callback failed: State parameter mismatch or missing verifier.`);
+        return oauthFailure(res, 'invalid_state');
+      }
+      if (req.query.error) {
+        const errParam = typeof req.query.error === 'string' ? req.query.error : 'unknown';
+        console.warn(`[OAuth Diagnostic] ${provider} callback returned error from authorization server: ${errParam}`);
+        return oauthFailure(res, errParam === 'access_denied' ? 'cancelled' : 'oauth_failed');
+      }
 
       const configuration = await getOAuthConfiguration(provider);
       const callbackUrl = new URL(getOAuthCallbackUrl(provider));
@@ -117,19 +161,97 @@ for (const provider of ['google', 'github'] as const) {
         ...(transaction.nonce ? { expectedNonce: transaction.nonce } : {}),
       }, { redirect_uri: getOAuthCallbackUrl(provider) });
       const identity = await resolveOAuthIdentity(provider, tokens.access_token, tokens.claims());
-      const user = await findOrCreateOAuthUser(provider, identity);
+
+      let user;
+      if (transaction.linkingUserId) {
+        // Authenticated user is explicitly linking a provider account
+        const targetUser = await prisma.user.findUnique({ where: { id: transaction.linkingUserId } });
+        if (!targetUser) {
+          console.warn(`[OAuth Diagnostic] ${provider} account-linking failed: Target user ${transaction.linkingUserId} not found.`);
+          return oauthFailure(res, 'oauth_failed');
+        }
+        // Enforce email consistency: never link a verified provider account to a different user's email
+        if (identity.emailVerified && targetUser.email.toLowerCase() !== identity.email.toLowerCase()) {
+          console.warn(`[OAuth Diagnostic] ${provider} account-linking rejected: Authenticated user email (${targetUser.email}) does not match verified provider email (${identity.email}).`);
+          return oauthFailure(res, 'account_exists');
+        }
+        await linkOAuthAccount(targetUser.id, provider, identity.providerAccountId);
+        console.log(`[OAuth Diagnostic] Successfully linked ${provider} provider account to user ID: ${targetUser.id}`);
+        user = targetUser;
+      } else {
+        user = await findOrCreateOAuthUser(provider, identity);
+      }
+
       const token = signToken({ userId: user.id, email: user.email, authVersion: user.authVersion });
       clearOAuthTransaction(res);
       setAuthCookie(res, token);
+      console.log(`[OAuth Diagnostic] ${provider} sign-in successful. Session cookie set for user ID: ${user.id}`);
       const target = new URL(transaction.returnPath, getOAuthFrontendUrl());
       res.redirect(303, target.toString());
     } catch (error) {
-      const code = error instanceof Error && error.message === 'oauth_account_exists' ? 'account_exists' : 'oauth_failed';
-      console.error(`OAuth ${provider} callback failed:`, error instanceof Error ? error.message : 'unknown error');
+      let code = 'oauth_failed';
+      const msg = error instanceof Error ? error.message : 'unknown error';
+      if (msg === 'oauth_account_exists') {
+        code = 'account_exists';
+        console.warn(`[OAuth Diagnostic] ${provider} sign-in blocked: An account already exists with this email address. Safe account-linking is required.`);
+      } else if (msg === 'provider_already_linked') {
+        code = 'provider_already_linked';
+        console.warn(`[OAuth Diagnostic] ${provider} sign-in blocked: Provider account is already linked to another user.`);
+      } else if (msg === 'oauth_identity_unverified') {
+        code = 'unverified_email';
+        console.warn(`[OAuth Diagnostic] ${provider} sign-in blocked: Identity or email is unverified.`);
+      } else {
+        console.error(`OAuth ${provider} callback failed:`, msg);
+      }
       oauthFailure(res, code);
     }
   });
 }
+
+/**
+ * GET /api/auth/providers
+ * Returns list of linked OAuth providers for the authenticated user.
+ */
+router.get('/providers', requireAuth, async (req: Request, res: Response): Promise<void> => {
+  try {
+    if (!req.user) {
+      res.status(401).json({ error: 'Authentication required' });
+      return;
+    }
+    const providers = await getUserProviders(req.user.userId);
+    res.status(200).json({ providers });
+  } catch (err) {
+    console.error('Failed to get providers:', err);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+/**
+ * DELETE /api/auth/providers/:provider
+ * Unlinks an OAuth provider from the authenticated user's account.
+ */
+router.delete('/providers/:provider', requireAuth, async (req: Request, res: Response): Promise<void> => {
+  try {
+    if (!req.user) {
+      res.status(401).json({ error: 'Authentication required' });
+      return;
+    }
+    const { provider } = req.params;
+    if (provider !== 'google' && provider !== 'github') {
+      res.status(400).json({ error: 'Invalid provider' });
+      return;
+    }
+    await unlinkOAuthAccount(req.user.userId, provider as OAuthProvider);
+    res.status(200).json({ message: `${provider} unlinked successfully` });
+  } catch (err) {
+    if (err instanceof Error && err.message === 'cannot_unlink_only_auth_method') {
+      res.status(400).json({ error: 'Cannot unlink your only sign-in method. Set a password first.' });
+      return;
+    }
+    console.error('Failed to unlink provider:', err);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
 
 /**
  * POST /api/auth/register

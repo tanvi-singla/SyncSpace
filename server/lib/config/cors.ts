@@ -2,11 +2,11 @@ import type { CorsOptions } from 'cors';
 
 /**
  * Parses and returns the list of explicitly configured frontend origins
- * from CLIENT_URL and FRONTEND_URL environment variables.
+ * from CLIENT_URL, FRONTEND_URL, and OAUTH_FRONTEND_URL environment variables.
  * Supports comma-separated origins and normalizes them by trimming and removing trailing slashes.
  */
 export function getAllowedConfiguredOrigins(): string[] {
-  const envValues = [process.env.CLIENT_URL, process.env.FRONTEND_URL];
+  const envValues = [process.env.CLIENT_URL, process.env.FRONTEND_URL, process.env.OAUTH_FRONTEND_URL];
   const origins: string[] = [];
 
   for (const val of envValues) {
@@ -110,7 +110,7 @@ export function isPrivateOrLocalhost(origin: string): boolean {
 /**
  * Evaluates whether an incoming HTTP or WebSocket request origin is allowed.
  * - Requests with no Origin header (e.g. server-to-server, Render health check probes, non-browser clients) are permitted.
- * - Origins explicitly configured in CLIENT_URL / FRONTEND_URL are always permitted.
+ * - Origins explicitly configured in CLIENT_URL / FRONTEND_URL / OAUTH_FRONTEND_URL are always permitted.
  * - In production (NODE_ENV === 'production'): ONLY explicitly configured origins are permitted;
  *   arbitrary localhost and private LAN origins are strictly rejected.
  * - In development / test: localhost and RFC 1918 private LAN origins are permitted.

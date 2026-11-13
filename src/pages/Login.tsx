@@ -23,6 +23,10 @@ export function Login() {
   const oauthErrorMessage = oauthError === 'cancelled' ? 'Sign-in was cancelled.'
     : oauthError === 'account_exists' ? 'An account already uses this email. Sign in with your password first; accounts are never linked automatically.'
     : oauthError === 'invalid_state' ? 'This sign-in request expired or could not be verified. Please try again.'
+    : oauthError === 'provider_unavailable' ? (import.meta.env.DEV ? 'OAuth credentials are not configured in your .env file. Set OAUTH_GOOGLE_CLIENT_ID and OAUTH_GOOGLE_CLIENT_SECRET (or GitHub).' : 'The authentication service is temporarily unavailable or not configured. Please try again later.')
+    : oauthError === 'provider_already_linked' ? 'This provider account is already linked to another SyncSpace account.'
+    : oauthError === 'unverified_email' ? 'Your provider account email is not verified. Please verify your email with your provider or sign in with your password.'
+    : oauthError === 'oauth_failed' ? 'Sign-in could not be completed with the provider. Please try again.'
     : oauthError ? 'Sign-in could not be completed. Please try again.' : null;
 
   // Redirect if already authenticated

@@ -90,14 +90,59 @@ export function verifyToken(token: string): TokenPayload | null {
 }
 
 /**
+ * Computes secure, HttpOnly cookie options based on the deployment environment.
+ * Supports cross-origin setups (e.g., Render separate frontend and backend origins)
+ * where SameSite='none' and Secure=true are required for credentialed requests.
+ */
+export function getAuthCookieOptions(): {
+  httpOnly: boolean;
+  secure: boolean;
+  sameSite: 'lax' | 'none' | 'strict';
+} {
+  const isProduction = process.env.NODE_ENV === 'production';
+  const explicitSameSite = process.env.COOKIE_SAME_SITE?.toLowerCase();
+
+  let sameSite: 'lax' | 'none' | 'strict' = 'lax';
+  let secure = isProduction;
+
+  if (explicitSameSite === 'none' || explicitSameSite === 'lax' || explicitSameSite === 'strict') {
+    sameSite = explicitSameSite;
+  } else if (isProduction) {
+    // Check if configured frontend origin is different from backend
+    const frontend = process.env.FRONTEND_URL || process.env.CLIENT_URL || process.env.OAUTH_FRONTEND_URL;
+    const backend = process.env.BACKEND_URL || process.env.API_URL || process.env.OAUTH_CALLBACK_BASE_URL;
+    if (frontend && backend) {
+      try {
+        if (new URL(frontend).origin !== new URL(backend).origin) {
+          sameSite = 'none';
+        }
+      } catch {
+        // Fall back to lax if parsing fails
+      }
+    }
+  }
+
+  // SameSite=None strictly requires Secure=true in modern browsers
+  if (sameSite === 'none') {
+    secure = true;
+  }
+
+  return {
+    httpOnly: true,
+    secure,
+    sameSite,
+  };
+}
+
+/**
  * Sets the signed JWT in a secure HttpOnly cookie.
  */
 export function setAuthCookie(res: Response, token: string): void {
+  const options = getAuthCookieOptions();
   res.cookie(AUTH_COOKIE_NAME, token, {
-    httpOnly: true,
-    secure: process.env.NODE_ENV === 'production',
-    sameSite: 'lax',
+    ...options,
     maxAge: COOKIE_MAX_AGE,
+    path: '/',
   });
 }
 
@@ -105,9 +150,9 @@ export function setAuthCookie(res: Response, token: string): void {
  * Clears the auth cookie upon logout.
  */
 export function clearAuthCookie(res: Response): void {
+  const options = getAuthCookieOptions();
   res.clearCookie(AUTH_COOKIE_NAME, {
-    httpOnly: true,
-    secure: process.env.NODE_ENV === 'production',
-    sameSite: 'lax',
+    ...options,
+    path: '/',
   });
 }

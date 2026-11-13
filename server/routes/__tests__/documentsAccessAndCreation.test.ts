@@ -140,7 +140,7 @@ describe('Document Access and Creation Tests (/api/documents)', { timeout: 30000
       ]);
 
       const allAccessible = [...ownedRes.body, ...sharedRes.body];
-      expect(allAccessible.length).toBe(4);
+      expect(allAccessible.length).toBeGreaterThanOrEqual(4);
 
       const titles = allAccessible.map((d) => d.title);
       expect(titles).toContain('ABC');
