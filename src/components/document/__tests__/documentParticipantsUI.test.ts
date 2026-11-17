@@ -548,4 +548,95 @@ describe('Phase 4: Document Header & Participant UI Aggregation', () => {
     expect(rohan?.role).toBe('VIEWER');
     expect(rohan?.isEditing).toBe(false); // Strictly suppressed
   });
+
+  it('scenario 7: document created by Vani displays Vani, actual creation date, and deduplicated contributor count', async () => {
+    const { computeDocumentAuthor, formatDocumentDate, computeContributorCount } = await import(
+      '../../../utils/documentMetadata'
+    );
+
+    const vaniUser = {
+      id: 'user-vani-id',
+      name: 'Vani',
+      email: 'vani@syncspace.dev',
+      avatarUrl: null,
+    };
+
+    const vaniDoc: DocumentMeta = {
+      id: 'doc-vani-101',
+      title: 'Untitled Document',
+      type: 'doc',
+      userId: 'user-vani-id',
+      owner: vaniUser,
+      createdBy: 'Vani',
+      isFavorite: false,
+      isDeleted: false,
+      createdAt: new Date('2026-11-17T18:00:00.000Z').getTime(),
+      updatedAt: new Date('2026-11-17T18:00:00.000Z').getTime(),
+      permission: 'OWNER',
+      shares: [],
+      isShared: false,
+    };
+
+    // 1. Author displays Vani when Vani creates the document
+    const authorForVani = computeDocumentAuthor(vaniDoc, vaniUser, true);
+    expect(authorForVani).toBe('Vani');
+
+    // 2. Author displays Vani even when another user (e.g. Mannat) opens the shared document
+    const mannatUser = { id: 'user-mannat-id', name: 'Mannat K.', email: 'mannat@syncspace.dev' };
+    const authorForMannat = computeDocumentAuthor(vaniDoc, mannatUser, false);
+    expect(authorForMannat).toBe('Vani');
+
+    // 3. Creation date displays actual creation date (Nov 17, 2026) and never falls back to Sep 9, 2026 or new Date()
+    const formattedDate = formatDocumentDate(vaniDoc.createdAt);
+    expect(formattedDate).toBe('Nov 17, 2026');
+
+    // Missing timestamp gives neutral fallback
+    expect(formatDocumentDate(undefined)).toBe('Date unavailable');
+
+    // 4. Initial contributor count is exactly 1 for a new document
+    const initialContributors = computeContributorCount(vaniDoc, vaniUser, true);
+    expect(initialContributors.count).toBe(1);
+    expect(initialContributors.text).toBe('1 contributor');
+
+    // 5. When shared with Mannat, contributor count becomes 2
+    const sharedWithMannatDoc: DocumentMeta = {
+      ...vaniDoc,
+      shares: [
+        {
+          id: 'share-1',
+          documentId: vaniDoc.id,
+          userId: mannatUser.id,
+          permission: 'EDITOR',
+          createdAt: '2026-11-17T18:10:00.000Z',
+          user: mannatUser,
+        },
+      ],
+    };
+
+    const sharedContributors = computeContributorCount(sharedWithMannatDoc, vaniUser, true);
+    expect(sharedContributors.count).toBe(2);
+    expect(sharedContributors.text).toBe('2 contributors');
+
+    // 6. Multiple tabs / duplicate user awareness does not increase contributor count
+    const extraDuplicateShares = [
+      ...sharedWithMannatDoc.shares!,
+      {
+        id: 'share-dup',
+        documentId: vaniDoc.id,
+        userId: mannatUser.id, // Same user
+        permission: 'EDITOR' as const,
+        createdAt: '2026-11-17T18:15:00.000Z',
+        user: mannatUser,
+      },
+    ];
+
+    const deduplicatedContributors = computeContributorCount(
+      sharedWithMannatDoc,
+      vaniUser,
+      true,
+      extraDuplicateShares
+    );
+    expect(deduplicatedContributors.count).toBe(2);
+    expect(deduplicatedContributors.text).toBe('2 contributors');
+  });
 });

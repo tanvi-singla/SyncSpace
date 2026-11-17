@@ -113,11 +113,23 @@ router.post('/', async (req: Request, res: Response): Promise<void> => {
         type,
         userId,
       },
+      include: {
+        user: {
+          select: {
+            id: true,
+            name: true,
+            email: true,
+            avatarUrl: true,
+          },
+        },
+      },
     });
 
     res.status(201).json({
       ...document,
       permission: 'OWNER',
+      owner: document.user,
+      shares: [],
     });
   } catch (err) {
     console.error('Create document error:', err);

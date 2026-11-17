@@ -38,6 +38,13 @@ import { useDocumentUI } from '../context/DocumentUIContext';
 import { useDocumentYjs } from '../hooks/useDocumentYjs';
 import { useAuth } from '../context/AuthContext';
 import { DocumentEditorHeader } from '../components/document/DocumentEditorHeader';
+import { getDocumentSharesApi } from '../lib/api/documents';
+import type { DocumentShareInfo } from '../types/dashboard';
+import {
+  computeDocumentAuthor,
+  formatDocumentDate,
+  computeContributorCount,
+} from '../utils/documentMetadata';
 
 export interface DocumentWorkspaceProps {
   workspaceState?: ReturnType<typeof useWorkspace>;
@@ -70,6 +77,33 @@ export function DocumentWorkspace({ workspaceState, showTopBar = false, document
   // Role permissions: VIEWERS cannot edit
   const isViewer = currentDocMeta?.permission === 'VIEWER';
   const isReadOnly = isLocked || isViewer;
+  const isOwner = !currentDocMeta?.isShared && (!currentDocMeta?.permission || currentDocMeta?.permission === 'OWNER');
+
+  // Load document shares for authoritative contributor counting
+  const [sharesList, setSharesList] = useState<DocumentShareInfo[]>(currentDocMeta?.shares || []);
+
+  useEffect(() => {
+    if (currentDocMeta?.shares && currentDocMeta.shares.length > 0) {
+      setSharesList(currentDocMeta.shares);
+    } else if (currentDocId) {
+      getDocumentSharesApi(currentDocId)
+        .then((data) => setSharesList(data))
+        .catch(() => {});
+    }
+  }, [currentDocId, currentDocMeta?.shares]);
+
+  // Document metadata row derivations (Author, Date, Contributors)
+  const authorName = useMemo(() => {
+    return computeDocumentAuthor(currentDocMeta, user, isOwner);
+  }, [currentDocMeta, user, isOwner]);
+
+  const formattedDate = useMemo(() => {
+    return formatDocumentDate(currentDocMeta?.createdAt);
+  }, [currentDocMeta?.createdAt]);
+
+  const contributorText = useMemo(() => {
+    return computeContributorCount(currentDocMeta, user, isOwner, sharesList).text;
+  }, [currentDocMeta, user, isOwner, sharesList]);
 
   // Subpages state
   const [subpages, setSubpages] = useState<{ id: string; title: string }[]>([]);
@@ -424,21 +458,21 @@ export function DocumentWorkspace({ workspaceState, showTopBar = false, document
             {(headerToggles.author || headerToggles.contributors || headerToggles.date) && (
               <div className="flex items-center gap-5 text-xs text-workspace-400 font-medium mb-8 pb-3 border-b border-workspace-100">
                 {headerToggles.author && (
-                  <div className="flex items-center gap-1.5">
+                  <div className="flex items-center gap-1.5" data-testid="doc-metadata-author">
                     <User size={13} className="text-workspace-400" />
-                    <span className="text-workspace-600">Tanvi</span>
+                    <span className="text-workspace-600">{authorName}</span>
                   </div>
                 )}
                 {headerToggles.contributors && (
-                  <div className="flex items-center gap-1.5">
+                  <div className="flex items-center gap-1.5" data-testid="doc-metadata-contributors">
                     <Users size={13} className="text-workspace-400" />
-                    <span>2 contributors</span>
+                    <span>{contributorText}</span>
                   </div>
                 )}
                 {headerToggles.date && (
-                  <div className="flex items-center gap-1.5">
+                  <div className="flex items-center gap-1.5" data-testid="doc-metadata-date">
                     <Calendar size={13} className="text-workspace-400" />
-                    <span>Sep 9, 2026</span>
+                    <span>{formattedDate}</span>
                   </div>
                 )}
               </div>

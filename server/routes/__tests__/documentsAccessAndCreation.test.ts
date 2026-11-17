@@ -231,7 +231,7 @@ const { prismaMock } = vi.hoisted(() => {
         }
         return docs.map((d) => ({ ...d }));
       }),
-      create: vi.fn(async ({ data }: { data: any }) => {
+      create: vi.fn(async ({ data, include }: { data: any; include?: any }) => {
         const id = data.id || `doc-mock-${docSeq++}`;
         const record = {
           id,
@@ -246,7 +246,14 @@ const { prismaMock } = vi.hoisted(() => {
           ...data,
         };
         docsStore.set(id, record);
-        return { ...record };
+        const result: any = { ...record };
+        if (include?.user) {
+          const owner = usersStore.get(data.userId);
+          result.user = owner
+            ? { id: owner.id, name: owner.name, email: owner.email, avatarUrl: owner.avatarUrl }
+            : null;
+        }
+        return result;
       }),
       count: vi.fn(async ({ where }: { where?: any } = {}) => {
         let docs = Array.from(docsStore.values());
