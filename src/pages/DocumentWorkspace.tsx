@@ -105,6 +105,10 @@ export function DocumentWorkspace({ workspaceState, showTopBar = false, document
     connectionStatus,
     isIndexedDbSynced,
     collaborators,
+    allParticipants,
+    currentUserTabs,
+    isLocalEditing,
+    markEditing,
   } = useDocumentYjs({
     documentId: currentDocId,
     user: user
@@ -112,6 +116,8 @@ export function DocumentWorkspace({ workspaceState, showTopBar = false, document
           id: user.id,
           name: user.name,
           color: '#00667E',
+          avatarUrl: user.avatarUrl,
+          role: currentDocMeta?.permission,
         }
       : undefined,
   });
@@ -139,6 +145,7 @@ export function DocumentWorkspace({ workspaceState, showTopBar = false, document
 
   const handleTitleChange = (newTitle: string) => {
     setDocTitle(newTitle);
+    markEditing();
     if (currentDocId && workspaceState?.updateDocumentTitle) {
       workspaceState.updateDocumentTitle(currentDocId, newTitle);
     }
@@ -247,6 +254,10 @@ export function DocumentWorkspace({ workspaceState, showTopBar = false, document
         connectionStatus={connectionStatus}
         isIndexedDbSynced={isIndexedDbSynced}
         collaborators={collaborators}
+        allParticipants={allParticipants}
+        currentUserTabs={currentUserTabs}
+        isLocalEditing={isLocalEditing}
+        docMeta={currentDocMeta}
         currentUser={user}
         onBack={() => {
           workspaceState?.setCurrentDocId(null);
@@ -384,6 +395,7 @@ export function DocumentWorkspace({ workspaceState, showTopBar = false, document
               <h1
                 contentEditable={!isReadOnly}
                 suppressContentEditableWarning
+                onInput={() => markEditing()}
                 onBlur={e => handleTitleChange(e.currentTarget.textContent || 'Untitled Document')}
                 className={`text-4xl sm:text-5xl font-extrabold text-workspace-900 tracking-tight outline-none mb-3 ${fontClass} empty:before:content-['Untitled_Document'] empty:before:text-workspace-300`}
               >
@@ -399,7 +411,10 @@ export function DocumentWorkspace({ workspaceState, showTopBar = false, document
                   disabled={isReadOnly}
                   placeholder="Add a subtitle..."
                   value={subtitle}
-                  onChange={e => setSubtitle(e.target.value)}
+                  onChange={e => {
+                    setSubtitle(e.target.value);
+                    markEditing();
+                  }}
                   className="w-full text-base text-workspace-500 placeholder-workspace-300 outline-none font-medium bg-transparent disabled:opacity-75"
                 />
               </div>

@@ -21,6 +21,8 @@ export interface DocumentMeta {
     name: string;
     email: string;
   };
+  userId?: string;
+  shares?: DocumentShareInfo[];
   isShared?: boolean;
 }
 
@@ -56,6 +58,7 @@ export interface SharedDocumentItem {
     name: string;
     email: string;
   };
+  shares?: DocumentShareInfo[];
 }
 
 export type SyncStatus = 'synced' | 'syncing' | 'offline' | 'error';

@@ -20,6 +20,7 @@ interface ApiDocument {
     name: string;
     email: string;
   };
+  shares?: DocumentShareInfo[];
 }
 
 /**
@@ -40,6 +41,8 @@ function toDocumentMeta(doc: ApiDocument, userName: string): DocumentMeta {
     createdBy: doc.owner?.name || userName,
     permission: doc.permission || 'OWNER',
     owner: doc.owner,
+    userId: doc.userId,
+    shares: doc.shares,
     isShared: doc.permission !== undefined && doc.permission !== 'OWNER',
   };
 }
@@ -57,6 +60,8 @@ function toSharedDocumentMeta(doc: SharedDocumentItem): DocumentMeta {
     createdBy: doc.owner?.name || 'Collaborator',
     permission: doc.permission,
     owner: doc.owner || undefined,
+    userId: doc.userId,
+    shares: doc.shares,
     isShared: true,
   };
 }

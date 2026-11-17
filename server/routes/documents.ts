@@ -133,8 +133,14 @@ router.post('/', async (req: Request, res: Response): Promise<void> => {
 router.post('/:documentId/share', async (req: Request, res: Response): Promise<void> => {
   try {
     const userId = req.user!.userId;
-    const { documentId } = req.params;
+    const rawDocId = req.params.documentId;
+    const documentId = typeof rawDocId === 'string' ? rawDocId : Array.isArray(rawDocId) ? rawDocId[0] : '';
     const { email, permission } = req.body;
+
+    if (!documentId) {
+      res.status(400).json({ error: 'Invalid document ID' });
+      return;
+    }
 
     // Validate inputs
     if (!email || typeof email !== 'string' || !email.trim()) {
@@ -220,12 +226,19 @@ router.post('/:documentId/share', async (req: Request, res: Response): Promise<v
 
 /**
  * GET /api/documents/:documentId/shares
- * Returns all active shares for a document. Owner only.
+ * Returns all active shares for a document.
+ * Accessible to document owner and all authorized collaborators (viewers & editors).
  */
 router.get('/:documentId/shares', async (req: Request, res: Response): Promise<void> => {
   try {
     const userId = req.user!.userId;
-    const { documentId } = req.params;
+    const rawDocId = req.params.documentId;
+    const documentId = typeof rawDocId === 'string' ? rawDocId : Array.isArray(rawDocId) ? rawDocId[0] : '';
+
+    if (!documentId) {
+      res.status(400).json({ error: 'Invalid document ID' });
+      return;
+    }
 
     const document = await prisma.document.findUnique({
       where: { id: documentId },
@@ -236,8 +249,23 @@ router.get('/:documentId/shares', async (req: Request, res: Response): Promise<v
       return;
     }
 
-    if (document.userId !== userId) {
-      res.status(403).json({ error: 'Only the document owner can view sharing settings' });
+    // Verify caller is owner or active collaborator before exposing collaborator data
+    const isOwner = document.userId === userId;
+    let isCollaborator = false;
+    if (!isOwner) {
+      const share = await prisma.documentShare.findUnique({
+        where: {
+          documentId_userId: {
+            documentId,
+            userId,
+          },
+        },
+      });
+      isCollaborator = !!share;
+    }
+
+    if (!isOwner && !isCollaborator) {
+      res.status(403).json({ error: 'Access denied. You do not have permission to view collaborators for this document.' });
       return;
     }
 
@@ -271,8 +299,16 @@ router.get('/:documentId/shares', async (req: Request, res: Response): Promise<v
 router.patch('/:documentId/share/:targetUserId', async (req: Request, res: Response): Promise<void> => {
   try {
     const callerId = req.user!.userId;
-    const { documentId, targetUserId } = req.params;
+    const rawDocId = req.params.documentId;
+    const documentId = typeof rawDocId === 'string' ? rawDocId : Array.isArray(rawDocId) ? rawDocId[0] : '';
+    const rawTargetUserId = req.params.targetUserId;
+    const targetUserId = typeof rawTargetUserId === 'string' ? rawTargetUserId : Array.isArray(rawTargetUserId) ? rawTargetUserId[0] : '';
     const { permission } = req.body;
+
+    if (!documentId || !targetUserId) {
+      res.status(400).json({ error: 'Invalid document ID or target user ID' });
+      return;
+    }
 
     if (!permission || !VALID_PERMISSIONS.includes(permission)) {
       res.status(400).json({ error: 'Invalid permission. Must be "VIEWER" or "EDITOR".' });
@@ -336,7 +372,15 @@ router.patch('/:documentId/share/:targetUserId', async (req: Request, res: Respo
 router.delete('/:documentId/share/:targetUserId', async (req: Request, res: Response): Promise<void> => {
   try {
     const callerId = req.user!.userId;
-    const { documentId, targetUserId } = req.params;
+    const rawDocId = req.params.documentId;
+    const documentId = typeof rawDocId === 'string' ? rawDocId : Array.isArray(rawDocId) ? rawDocId[0] : '';
+    const rawTargetUserId = req.params.targetUserId;
+    const targetUserId = typeof rawTargetUserId === 'string' ? rawTargetUserId : Array.isArray(rawTargetUserId) ? rawTargetUserId[0] : '';
+
+    if (!documentId || !targetUserId) {
+      res.status(400).json({ error: 'Invalid document ID or target user ID' });
+      return;
+    }
 
     const document = await prisma.document.findUnique({
       where: { id: documentId },
@@ -385,9 +429,10 @@ router.delete('/:documentId/share/:targetUserId', async (req: Request, res: Resp
 router.get('/:id', async (req: Request, res: Response): Promise<void> => {
   try {
     const userId = req.user!.userId;
-    const { id } = req.params;
+    const rawId = req.params.id;
+    const id = typeof rawId === 'string' ? rawId : Array.isArray(rawId) ? rawId[0] : '';
 
-    if (!id || typeof id !== 'string') {
+    if (!id) {
       res.status(400).json({ error: 'Invalid document ID' });
       return;
     }
@@ -402,6 +447,19 @@ router.get('/:id', async (req: Request, res: Response): Promise<void> => {
             email: true,
             avatarUrl: true,
           },
+        },
+        shares: {
+          include: {
+            user: {
+              select: {
+                id: true,
+                name: true,
+                email: true,
+                avatarUrl: true,
+              },
+            },
+          },
+          orderBy: { createdAt: 'asc' },
         },
       },
     });
@@ -418,14 +476,7 @@ router.get('/:id', async (req: Request, res: Response): Promise<void> => {
       permission = 'OWNER';
     } else {
       // Check if document was shared with user
-      const share = await prisma.documentShare.findUnique({
-        where: {
-          documentId_userId: {
-            documentId: id,
-            userId,
-          },
-        },
-      });
+      const share = document.shares.find((s) => s.userId === userId);
 
       if (!share) {
         res.status(403).json({ error: 'Access denied' });
@@ -439,6 +490,7 @@ router.get('/:id', async (req: Request, res: Response): Promise<void> => {
       ...document,
       permission,
       owner: document.user,
+      shares: document.shares,
     });
   } catch (err) {
     console.error('Get document error:', err);
@@ -456,9 +508,10 @@ router.get('/:id', async (req: Request, res: Response): Promise<void> => {
 router.put('/:id', async (req: Request, res: Response): Promise<void> => {
   try {
     const userId = req.user!.userId;
-    const { id } = req.params;
+    const rawId = req.params.id;
+    const id = typeof rawId === 'string' ? rawId : Array.isArray(rawId) ? rawId[0] : '';
 
-    if (!id || typeof id !== 'string') {
+    if (!id) {
       res.status(400).json({ error: 'Invalid document ID' });
       return;
     }
@@ -553,9 +606,10 @@ router.put('/:id', async (req: Request, res: Response): Promise<void> => {
 router.delete('/:id', async (req: Request, res: Response): Promise<void> => {
   try {
     const userId = req.user!.userId;
-    const { id } = req.params;
+    const rawId = req.params.id;
+    const id = typeof rawId === 'string' ? rawId : Array.isArray(rawId) ? rawId[0] : '';
 
-    if (!id || typeof id !== 'string') {
+    if (!id) {
       res.status(400).json({ error: 'Invalid document ID' });
       return;
     }
