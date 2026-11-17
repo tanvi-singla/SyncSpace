@@ -9,11 +9,27 @@ import { getWsTokenApi } from '../lib/api/auth';
 
 export type ConnectionStatus = 'connected' | 'connecting' | 'disconnected';
 
+export interface RawAwarenessUserState {
+  userId?: string;
+  name?: string;
+  color?: string;
+  avatarUrl?: string | null;
+  role?: 'OWNER' | 'EDITOR' | 'VIEWER';
+  isEditing?: boolean;
+  currentDocId?: string;
+  lastActive?: number;
+}
+
 export interface DocumentCollaborator {
   clientId: number;
+  clientIds: number[];
   userId?: string;
   name: string;
   color: string;
+  avatarUrl?: string | null;
+  role?: 'OWNER' | 'EDITOR' | 'VIEWER';
+  tabCount: number;
+  isEditing: boolean;
   lastActive: number;
 }
 
@@ -24,6 +40,8 @@ export interface UseDocumentYjsOptions {
     id?: string;
     name?: string;
     color?: string;
+    avatarUrl?: string | null;
+    role?: 'OWNER' | 'EDITOR' | 'VIEWER';
   };
 }
 
@@ -45,6 +63,141 @@ export interface UseDocumentYjsReturn {
   clientId: number;
   collaborators: DocumentCollaborator[];
   remoteUsers: DocumentCollaborator[];
+  allParticipants: DocumentCollaborator[];
+  currentUserTabs: number;
+  isLocalEditing: boolean;
+  markEditing: () => void;
+}
+
+/**
+ * Pure deduplication helper for Yjs awareness states.
+ * - Groups multiple Yjs client IDs belonging to the same authenticated PostgreSQL userId.
+ * - Displays each person only once with an accurate tabCount.
+ * - If any tab belonging to a user is editing, marks that user as editing.
+ * - Never allows a VIEWER to appear as editing.
+ * - Cleans up stale editing flags (> 4s inactivity) and dropped clients.
+ */
+export function deduplicateAwarenessStates(
+  states: Map<number, { user?: RawAwarenessUserState; [key: string]: any }>,
+  localClientId?: number,
+  localUserId?: string
+): {
+  collaborators: DocumentCollaborator[];
+  allParticipants: DocumentCollaborator[];
+  currentUserTabs: number;
+} {
+  const groups = new Map<
+    string,
+    {
+      primaryClientId: number;
+      clientIds: number[];
+      userId?: string;
+      name: string;
+      color: string;
+      avatarUrl?: string | null;
+      role?: 'OWNER' | 'EDITOR' | 'VIEWER';
+      isEditing: boolean;
+      lastActive: number;
+      isLocalUser: boolean;
+    }
+  >();
+
+  const now = Date.now();
+
+  states.forEach((state, cid) => {
+    if (!state || !state.user) return;
+    const u = state.user;
+
+    // Drop stale states older than awareness timeout (35s)
+    if (u.lastActive && now - u.lastActive > 35000) {
+      return;
+    }
+
+    const userId = u.userId;
+    const userKey = userId ? `user:${userId}` : `client:${cid}`;
+
+    const isThisTabLocal =
+      (localClientId !== undefined && cid === localClientId) ||
+      Boolean(localUserId && userId && localUserId === userId);
+
+    // VIEWER cannot appear as editing. Inactivity threshold: 4 seconds.
+    const tabIsEditing =
+      u.role === 'VIEWER'
+        ? false
+        : Boolean(u.isEditing === true && (!u.lastActive || now - u.lastActive < 4000));
+
+    const existing = groups.get(userKey);
+    if (!existing) {
+      groups.set(userKey, {
+        primaryClientId: cid,
+        clientIds: [cid],
+        userId: userId || undefined,
+        name: u.name || 'Collaborator',
+        color: u.color || '#00667E',
+        avatarUrl: u.avatarUrl || null,
+        role: u.role,
+        isEditing: tabIsEditing,
+        lastActive: u.lastActive || now,
+        isLocalUser: isThisTabLocal,
+      });
+    } else {
+      existing.clientIds.push(cid);
+      if (tabIsEditing) {
+        existing.isEditing = true;
+      }
+      existing.lastActive = Math.max(existing.lastActive, u.lastActive || now);
+      if (isThisTabLocal) {
+        existing.isLocalUser = true;
+      }
+      // Upgrade placeholder name or avatar if available from another tab
+      if (
+        (!existing.name || existing.name === 'Collaborator' || existing.name === 'Anonymous') &&
+        u.name &&
+        u.name !== 'Collaborator'
+      ) {
+        existing.name = u.name;
+      }
+      if (!existing.avatarUrl && u.avatarUrl) {
+        existing.avatarUrl = u.avatarUrl;
+      }
+      if (!existing.role && u.role) {
+        existing.role = u.role;
+      }
+    }
+  });
+
+  const allParticipants: DocumentCollaborator[] = [];
+  const remoteCollaborators: DocumentCollaborator[] = [];
+  let currentUserTabs = 1;
+
+  groups.forEach((g) => {
+    const participant: DocumentCollaborator = {
+      clientId: g.primaryClientId,
+      clientIds: g.clientIds,
+      userId: g.userId,
+      name: g.name,
+      color: g.color,
+      avatarUrl: g.avatarUrl,
+      role: g.role,
+      tabCount: g.clientIds.length,
+      isEditing: g.isEditing,
+      lastActive: g.lastActive,
+    };
+
+    allParticipants.push(participant);
+
+    if (g.isLocalUser) {
+      currentUserTabs = g.clientIds.length;
+    } else {
+      remoteCollaborators.push(participant);
+    }
+  });
+
+  return {
+    collaborators: remoteCollaborators,
+    allParticipants,
+    currentUserTabs,
+  };
 }
 
 function generateBlockId(): string {
@@ -106,12 +259,18 @@ export function useDocumentYjs({
   const [isIndexedDbSynced, setIsIndexedDbSynced] = useState(false);
   const [clientId, setClientId] = useState<number>(0);
   const [collaborators, setCollaborators] = useState<DocumentCollaborator[]>([]);
+  const [allParticipants, setAllParticipants] = useState<DocumentCollaborator[]>([]);
+  const [currentUserTabs, setCurrentUserTabs] = useState<number>(1);
+  const [isLocalEditing, setIsLocalEditing] = useState<boolean>(false);
 
   const ydocRef = useRef<Y.Doc | null>(null);
   const blocksArrayRef = useRef<Y.Array<any> | null>(null);
   const providerRef = useRef<WebsocketProvider | null>(null);
   const idbRef = useRef<IndexeddbPersistence | null>(null);
   const awarenessThrottleRef = useRef<number>(0);
+  const editingTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const userRef = useRef(user);
+  userRef.current = user;
 
   // Use the standardized multi-computer WebSocket URL resolver
   const resolvedWsUrl = wsUrl || getWsUrl();
@@ -271,9 +430,12 @@ export function useDocumentYjs({
       // Awareness for collaborative presence
       const awareness = wsProvider.awareness;
       awareness.setLocalStateField('user', {
-        name: user?.name || 'Collaborator',
-        color: user?.color || '#00667E',
-        userId: user?.id,
+        name: userRef.current?.name || 'Collaborator',
+        color: userRef.current?.color || '#00667E',
+        userId: userRef.current?.id,
+        avatarUrl: userRef.current?.avatarUrl || null,
+        role: userRef.current?.role,
+        isEditing: false,
         currentDocId: documentId,
         lastActive: Date.now(),
       });
@@ -284,21 +446,15 @@ export function useDocumentYjs({
         awarenessThrottleRef.current = now;
 
         const states = awareness.getStates();
-        const active: DocumentCollaborator[] = [];
         const localClientId = doc.clientID;
+        const currentUserId = userRef.current?.id;
 
-        states.forEach((state, cid) => {
-          if (cid !== localClientId && state.user) {
-            active.push({
-              clientId: cid,
-              userId: state.user.userId,
-              name: state.user.name || 'Anonymous',
-              color: state.user.color || '#00667E',
-              lastActive: state.user.lastActive || Date.now(),
-            });
-          }
-        });
-        setCollaborators(active);
+        const { collaborators: remoteCollabs, allParticipants: allParts, currentUserTabs: userTabs } =
+          deduplicateAwarenessStates(states, localClientId, currentUserId);
+
+        setCollaborators(remoteCollabs);
+        setAllParticipants(allParts);
+        setCurrentUserTabs(userTabs);
       };
 
       awareness.on('change', handleAwarenessChange);
@@ -343,6 +499,10 @@ export function useDocumentYjs({
     // 4. Cleanup on document change or unmount
     return () => {
       isDisposed = true;
+      if (editingTimeoutRef.current) {
+        clearTimeout(editingTimeoutRef.current);
+        editingTimeoutRef.current = null;
+      }
       blocksArray.unobserveDeep(handleArrayChange);
       cleanupAwareness?.();
       if (wsProvider) {
@@ -357,6 +517,80 @@ export function useDocumentYjs({
     };
   }, [documentId, resolvedWsUrl]);
 
+  // Rehydrate awareness user metadata whenever authenticated user or role updates
+  useEffect(() => {
+    userRef.current = user;
+    const provider = providerRef.current;
+    if (!provider) return;
+
+    const awareness = provider.awareness;
+    const currentLocal = awareness.getLocalState()?.user || {};
+
+    const isViewer = user?.role === 'VIEWER';
+    const isEditing = isViewer ? false : Boolean(currentLocal.isEditing);
+
+    awareness.setLocalStateField('user', {
+      ...currentLocal,
+      userId: user?.id,
+      name: user?.name || currentLocal.name || 'Collaborator',
+      color: user?.color || currentLocal.color || '#00667E',
+      avatarUrl: user?.avatarUrl !== undefined ? user.avatarUrl : currentLocal.avatarUrl,
+      role: user?.role !== undefined ? user.role : currentLocal.role,
+      currentDocId: documentId,
+      isEditing,
+      lastActive: Date.now(),
+    });
+
+    const states = awareness.getStates();
+    const localClientId = ydocRef.current?.clientID;
+    const { collaborators: remoteCollabs, allParticipants: allParts, currentUserTabs: userTabs } =
+      deduplicateAwarenessStates(states, localClientId, user?.id);
+
+    setCollaborators(remoteCollabs);
+    setAllParticipants(allParts);
+    setCurrentUserTabs(userTabs);
+  }, [user?.id, user?.name, user?.avatarUrl, user?.role, user?.color, documentId]);
+
+  // Editing activity broadcaster with 3.5-second auto-timeout
+  const markEditing = useCallback(() => {
+    // VIEWER cannot appear as editing or broadcast editing activity
+    if (userRef.current?.role === 'VIEWER') return;
+
+    const provider = providerRef.current;
+    if (!provider) return;
+
+    const awareness = provider.awareness;
+    const current = awareness.getLocalState()?.user;
+    if (!current) return;
+
+    setIsLocalEditing(true);
+    awareness.setLocalStateField('user', {
+      ...current,
+      isEditing: true,
+      lastActive: Date.now(),
+    });
+
+    if (editingTimeoutRef.current) {
+      clearTimeout(editingTimeoutRef.current);
+    }
+
+    editingTimeoutRef.current = setTimeout(() => {
+      const activeProvider = providerRef.current;
+      if (!activeProvider) return;
+      const activeAwareness = activeProvider.awareness;
+      const curr = activeAwareness.getLocalState()?.user;
+      if (curr) {
+        activeAwareness.setLocalStateField('user', {
+          ...curr,
+          isEditing: false,
+          lastActive: Date.now(),
+        });
+      }
+      setIsLocalEditing(false);
+      editingTimeoutRef.current = null;
+    }, 3500);
+  }, []);
+
   // Update a block in Y.Doc with granular property mutations (no delete-reinsert)
   const updateBlock = useCallback(
     (
@@ -364,6 +598,7 @@ export function useDocumentYjs({
       updates: Partial<DocumentBlock> | string,
       extra?: Partial<DocumentBlock>
     ) => {
+      markEditing();
       const currentArray = blocksArrayRef.current;
       const currentDoc = ydocRef.current;
       if (!currentArray || !currentDoc) return;
@@ -410,7 +645,7 @@ export function useDocumentYjs({
         });
       }
     },
-    []
+    [markEditing]
   );
 
   // Add a new block in Y.Doc (at end or after a specific block)
@@ -419,6 +654,7 @@ export function useDocumentYjs({
       typeOrBlock?: BlockType | Partial<DocumentBlock>,
       afterId?: string
     ): string => {
+      markEditing();
       const currentArray = blocksArrayRef.current;
       const currentDoc = ydocRef.current;
       if (!currentArray || !currentDoc) return '';
@@ -457,11 +693,12 @@ export function useDocumentYjs({
 
       return newBlock.id;
     },
-    []
+    [markEditing]
   );
 
   // Delete a block from Y.Doc (resets to single empty block if all deleted)
   const deleteBlock = useCallback((id: string) => {
+    markEditing();
     const currentArray = blocksArrayRef.current;
     const currentDoc = ydocRef.current;
     if (!currentArray || !currentDoc) return;
@@ -485,10 +722,11 @@ export function useDocumentYjs({
         currentArray.delete(idx, 1);
       }
     });
-  }, []);
+  }, [markEditing]);
 
   // Toggle checklist checkbox in Y.Doc
   const toggleChecklist = useCallback((id: string) => {
+    markEditing();
     const currentArray = blocksArrayRef.current;
     const currentDoc = ydocRef.current;
     if (!currentArray || !currentDoc) return;
@@ -514,7 +752,7 @@ export function useDocumentYjs({
         ]);
       });
     }
-  }, []);
+  }, [markEditing]);
 
   return {
     blocks,
@@ -527,6 +765,10 @@ export function useDocumentYjs({
     clientId,
     collaborators,
     remoteUsers: collaborators,
+    allParticipants,
+    currentUserTabs,
+    isLocalEditing,
+    markEditing,
   };
 }
 
